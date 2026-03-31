@@ -90,7 +90,13 @@ def main(**kwargs):
     ax.set_ylim(0, 1.05)
     ax.legend()
     plt.tight_layout()
-    plt.show()
+
+    save = kwargs.get('save', None)
+    if save:
+        fig.savefig(save, dpi=150)
+        print(f"Plot saved to {save}")
+    else:
+        plt.show()
 
 
 if __name__ == "__main__":
