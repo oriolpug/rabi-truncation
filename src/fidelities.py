@@ -6,41 +6,12 @@ import states
 import numpy as np
 
 def common_basis(state1: states.State, state2: states.State):
-    match type(state1):
-        case states.StateFull:
-            match type(state2):
-                case states.StateFull:
-                    return states.StateFull
-                case states.StateTruncated:
-                    return states.StateTruncated
-                case states.StateAtom:
-                    return states.StateAtom
-                case _:
-                    raise Exception(f"Unknown state type: {type(state2)}")
-
-        case states.StateTruncated:
-            match type(state2):
-                case states.StateFull:
-                    return states.StateFull
-                case states.StateTruncated:
-                    return states.StateTruncated
-                case states.StateAtom:
-                    return states.StateAtom
-                case _:
-                    raise Exception(f"Unknown state type: {type(state2)}")
-
-        case states.StateAtom:
-            match type(state2):
-                case states.StateFull:
-                    return states.StateFull
-                case states.StateTruncated:
-                    return states.StateTruncated
-                case states.StateAtom:
-                    return states.StateAtom
-                case _:
-                    raise Exception(f"Unknown state type: {type(state2)}")
-        case _:
-            raise Exception(f"Unknown state type: {type(state1)}")
+    known = {states.StateFull, states.StateTruncated, states.StateAtom, states.StateTotalCap}
+    if type(state1) not in known:
+        raise Exception(f"Unknown state type: {type(state1)}")
+    if type(state2) not in known:
+        raise Exception(f"Unknown state type: {type(state2)}")
+    return type(state2)
 
 def fidelity_statevector(state1: states.State , state2: states.State) -> float:
     """

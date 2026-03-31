@@ -7,7 +7,7 @@ import pytest
 import qutip
 
 from utilities import Config, NumberState, CoherentState
-from states import StateFull, StateTruncated, StateAtom, State, state
+from states import StateFull, StateTruncated, StateAtom, StateTotalCap, State, state
 
 
 # ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@ def is_normalized(v, atol=1e-12):
 
 
 def get_dim(truncation, modes=1, excitation_cap=3):
-    cls = {'full': StateFull, 'truncated': StateTruncated, 'truncated+atom': StateAtom}[truncation]
+    cls = {'full': StateFull, 'truncated': StateTruncated, 'truncated+atom': StateAtom, 'full+totalcap': StateTotalCap}[truncation]
     cfg = make_cfg(truncation, modes=modes, excitation_cap=excitation_cap)
     return cls(cfg, NumberState(1)).compute_dim()
 
@@ -51,10 +51,35 @@ class TestComputeDim:
         N, M = 3, 1
         assert s.compute_dim() == 2 * (M * N + 1) * (N + 1)  # 32
 
+    def test_totalcap_single_mode(self):
+        from math import comb
+        cfg = make_cfg('full+totalcap', modes=1, excitation_cap=3)
+        s = StateTotalCap(cfg, NumberState(1))
+        assert s.compute_dim() == 2 * comb(3 + 1, 1)  # 8
+
+    def test_totalcap_multi_mode(self):
+        from math import comb
+        cfg = make_cfg('full+totalcap', modes=3, excitation_cap=2)
+        s = StateTotalCap(cfg, NumberState(1))
+        N, M = cfg.excitation_cap, cfg.modes
+        assert s.compute_dim() == 2 * comb(N + M, M)
+
     @pytest.mark.parametrize("truncation,cls", [
         ('full', StateFull),
         ('truncated', StateTruncated),
         ('truncated+atom', StateAtom),
+        ('full+totalcap', StateTotalCap),
+    ])
+    def test_all_states_count_matches_dim(self, truncation, cls):
+        cfg = make_cfg(truncation)
+        s = cls(cfg, NumberState(1))
+        assert sum(1 for _ in s.all_states()) == s.compute_dim()
+
+    @pytest.mark.parametrize("truncation,cls", [
+        ('full', StateFull),
+        ('truncated', StateTruncated),
+        ('truncated+atom', StateAtom),
+        ('full+totalcap', StateTotalCap),
     ])
     def test_vector_length_matches_dim(self, truncation, cls):
         cfg = make_cfg(truncation)

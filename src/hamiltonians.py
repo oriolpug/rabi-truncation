@@ -14,7 +14,7 @@ import scipy.sparse as sp
 from utilities import Config
 from abc import ABC, abstractmethod
 from itertools import product
-from states import FullBasis, TruncatedBasis, AtomBasis
+from states import FullBasis, TruncatedBasis, AtomBasis, TotalCapBasis
 
 class Hamiltonian(ABC):
     def __init__(self, config):
@@ -51,7 +51,7 @@ class Hamiltonian(ABC):
         self.interaction()
 
     def g(self, k) -> complex:
-        return 1j * self.config.g * np.sqrt(np.abs(k))
+        return self.config.g * np.sqrt(np.abs(k))
 
     def atom_index(self, atom):
         return 1 if atom == "e" else 0
@@ -120,7 +120,7 @@ class HamiltonianFull(FullBasis, Hamiltonian):
                 eigenvalue = np.sqrt(max(bra.get(f'n{trans_index+1}',0),
                                          ket.get(f'n{trans_index+1}', 0))) # eigenvalue of the bosonic operator
 
-                self[ket, bra] = hbar * sign * self.g(ks[trans_index]) * eigenvalue * np.exp(sign * 1j * ks[trans_index] * x)
+                self[ket, bra] = hbar * self.g(ks[trans_index]) * eigenvalue * np.exp(sign * 1j * ks[trans_index] * x)
 
 class HamiltonianTruncated(TruncatedBasis, Hamiltonian):
     # state: |n_m ; s>
@@ -148,7 +148,7 @@ class HamiltonianTruncated(TruncatedBasis, Hamiltonian):
                 eigenvalue = np.sqrt(max(bra.get(f'n{trans_index+1}', 0),
                                          ket.get(f'n{trans_index+1}', 0)))  # eigenvalue of the bosonic operator
 
-                self[ket, bra] = hbar * sign * self.g(ks[trans_index]) * eigenvalue * np.exp(sign * 1j * ks[trans_index] * x)
+                self[ket, bra] = hbar * self.g(ks[trans_index]) * eigenvalue * np.exp(sign * 1j * ks[trans_index] * x)
 
 
 class HamiltonianAtom(AtomBasis, Hamiltonian):
@@ -220,8 +220,34 @@ class HamiltonianAtom(AtomBasis, Hamiltonian):
                                          ket.get(f'n{trans_index+1}', 0)))  # eigenvalue of the bosonic operator
                 k_trans = ks[trans_index] if trans_index < len(ks) else w
 
-                self[ket, bra] = hbar * sign * self.g(k_trans) * eigenvalue * np.exp(
+                self[ket, bra] = hbar * self.g(k_trans) * eigenvalue * np.exp(
                     sign * 1j * k_trans * x)
+
+class HamiltonianTotalCap(TotalCapBasis, Hamiltonian):
+    def free(self):
+        M = self.config.modes
+        hbar, c = self.config.hbar, self.config.c
+        w, ks = self.config.w_atom, self.config.frequencies
+
+        for state in self.all_states():
+            if state['atom'] == 'g':
+                self[state, state] = hbar * c * np.sum([state.get(f'n{m+1}', 0) * np.abs(ks[m]) for m in range(M)])
+            elif state['atom'] == 'e':
+                self[state, state] = hbar * (w + c * np.sum([state.get(f'n{m+1}', 0) * np.abs(ks[m]) for m in range(M)]))
+
+    def interaction(self):
+        hbar, c = self.config.hbar, self.config.c
+        ks, x = self.config.frequencies, self.config.x_atom
+
+        for ket, bra in product(self.all_states(), repeat=2):
+            if self.transition_possible(ket, bra):
+                sign = self.transition_sign(ket, bra)
+                trans_index = self.transition_location(ket, bra)
+                eigenvalue = np.sqrt(max(bra.get(f'n{trans_index+1}', 0),
+                                         ket.get(f'n{trans_index+1}', 0)))
+
+                self[ket, bra] = hbar * self.g(ks[trans_index]) * eigenvalue * np.exp(sign * 1j * ks[trans_index] * x)
+
 
 def hamiltonian(config: Config) -> qutip.Qobj:
     # Logic to choose appropriate Hamiltonian from config
@@ -233,6 +259,8 @@ def hamiltonian(config: Config) -> qutip.Qobj:
             h = HamiltonianAtom(config)
         case "full":
             h = HamiltonianFull(config)
+        case "full+totalcap":
+            h = HamiltonianTotalCap(config)
 
     h.build_hamiltonian()
     return h.to_qObj()

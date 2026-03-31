@@ -24,7 +24,81 @@ class CoherentState(StateType):
 
 @dataclass
 class Config:
-    """ Single source of truth for sim parameters"""
+    """
+    Single source of truth for simulation parameters.
+
+    Parameters
+    ----------
+    modes : int
+        Number of photon field modes in the wave-vector grid. If k=0 falls on
+        the grid it is removed and ``modes`` is decremented by 1. Default: 64.
+    length : float
+        Physical length of the cavity (sets the wave-vector spacing). Default: 10π.
+    g : float
+        Atom-field coupling constant. Default: 0.01.
+    x_atom : float
+        Position of the atom along the cavity. Default: length/2 (centre).
+    w_atom : float
+        Atom transition frequency (also used as the reference frequency for
+        ``k_photon`` and for the ``AtomBasis`` oscillator mode). Default: 1.0.
+    x_photon : float
+        Centre position of the initial photon wave-packet. Default: 0.0.
+    k_photon : float
+        Central wave-vector of the initial photon state. Defaults to ``w_atom``
+        (resonance).
+    sigma_photon : float
+        Width (standard deviation) of the photon wave-packet in k-space.
+        Default: 1.0.
+    state : StateType
+        Class (not instance) specifying the initial photon state type.
+        Use ``NumberState`` for a Fock state or ``CoherentState`` for a
+        coherent state. Default: ``NumberState``.
+    atom_state : str
+        Initial atom state. Accepted values: ``'g'`` (ground), ``'e'``
+        (excited), ``'+'`` / ``'plus'`` (|+⟩), ``'minus'`` (|−⟩), or a
+        two-element sequence ``[cg, ce]`` for an arbitrary superposition.
+        Default: ``'g'``.
+    t : float
+        Total evolution time. Default: 10.0.
+    dt : float
+        Time step for the solver output. Default: 0.1.
+    c : float
+        Speed of light (set to 1 for natural units). Default: 1.0.
+    hbar : float
+        Reduced Planck constant (set to 1 for natural units). Default: 1.0.
+    excitation_cap : int
+        Maximum number of photons allowed per mode (Fock-space truncation
+        cap). Default: 3.
+    RWA : bool
+        If ``True``, apply the rotating-wave approximation (keep only
+        resonant terms in the interaction). Default: ``False``.
+    truncation : str
+        Hilbert-space truncation scheme. One of:
+
+        * ``"full"``            — all Fock states up to ``excitation_cap`` per
+          mode; dim = 2(N+1)^M.
+        * ``"truncated"``       — vacuum + single-mode excitations only;
+          dim = 2(MN+1).
+        * ``"truncated+atom"``  — truncated basis extended with an atom
+          oscillator (``n_atom``) mode; dim = 2(MN+1)(N+1).
+        * ``"full+totalcap"``   — all Fock states where the **total** photon
+          number across all modes is ≤ ``excitation_cap``; dim = 2·C(N+M, M).
+          Scales polynomially in M (unlike ``"full"``), making large mode
+          counts tractable.
+
+        Default: ``"full"``.
+
+    Attributes set by ``__post_init__``
+    ------------------------------------
+    frequencies : np.ndarray
+        Full wave-vector grid (including zero if present). In single-mode
+        operation this is ``[k_photon]``.
+    ks : np.ndarray
+        Zero-free wave-vector grid used by the Hamiltonian (only set when
+        ``modes > 1`` and k=0 is present).
+    atom_coeffs : dict
+        Mapping ``{'g': cg, 'e': ce}`` derived from ``atom_state``.
+    """
     # Grid
     modes: int = 64
     length: float = 10 * pi

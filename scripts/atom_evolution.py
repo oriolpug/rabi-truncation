@@ -40,6 +40,7 @@ def run_simulation(
     N: int,
     truncation: str,
     modes: int,
+    L: float,
     t: float,
     dt: float,
     RWA: bool,
@@ -49,6 +50,7 @@ def run_simulation(
 
     config = Config(
         modes=modes,
+        length=L,
         g=g,
         atom_state=atom,
         state=state_type,
@@ -75,6 +77,7 @@ def main(**kwargs):
     n = int(kwargs.get("n", 1))
     N = int(kwargs.get("N", 3))
     modes = int(kwargs.get("modes", 1))
+    L = float(kwargs.get("length", 20))
     t = float(kwargs.get("t", 50.0))
     dt = float(kwargs.get("dt", 0.1))
     rwa_raw = kwargs.get("RWA", "False")
@@ -91,7 +94,7 @@ def main(**kwargs):
         print(f"Running truncation={truncation}, g={g}, atom={atom}, photon={photon_label}, N={N}, RWA={RWA}")
         times, pe = run_simulation(
             g=g, atom=atom, photon_type=photon_type, alpha=alpha, n=n,
-            N=N, truncation=truncation, modes=modes, t=t, dt=dt, RWA=RWA,
+            N=N, truncation=truncation, modes=modes, L=L, t=t, dt=dt, RWA=RWA,
         )
         ax.plot(times, np.real(pe), label=truncation)
 

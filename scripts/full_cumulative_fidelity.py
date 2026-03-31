@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 
 from utilities import Config, CoherentState
 from simulation import Simulation
-from states import State
+from states import StateTotalCap
 from fidelities import fidelity_statevector
 
 
@@ -35,23 +35,23 @@ def compute_and_evolve(N_max: int = 10, g: float = 0.01, alpha: complex = 1 + 0j
             g=g,
             RWA=RWA,
             state=CoherentState(alpha),
-            truncation="full",
+            truncation="full+totalcap",
         )
 
         sim = Simulation(config)
         sim.time_evolve()
 
         final_vec = sim.result.states[-1].full()[:, 0]
-        final_state = State.from_vector(config, final_vec)
+        final_state = StateTotalCap.from_vector(config, final_vec)
         final_states.append(final_state)
 
-        print(f"  N={N:2d}  dim={config.excitation_cap}  done")
+        print(f"  N={N:2d}  dim={sim.H.shape[0]}  done")
 
-    # F(N) = |<psi(N+1)|psi(N)>|^2  — iterate over the smaller-N state first
-    # so fidelity_statevector uses the smaller basis as the reference
+    # F(N) = |<psi(N+1)|psi(N)>|^2 — pass larger-N state first so that
+    # common_basis returns type(state2) = the smaller basis as the reference
     N_values = list(range(1, N_max))
     fidelities = [
-        fidelity_statevector(final_states[i], final_states[i + 1])
+        fidelity_statevector(final_states[i + 1], final_states[i])
         for i in range(N_max - 1)
     ]
 

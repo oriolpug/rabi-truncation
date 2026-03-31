@@ -41,7 +41,7 @@ class Simulation:
             return self.result.expect[index][t]
 
     def compute_atom_density_matrix(self, t: float = None):
-        cls = {"full": StateFull, "truncated": StateTruncated, "truncated+atom": StateAtom}[self.config.truncation]
+        cls = {"full": StateFull, "truncated": StateTruncated, "truncated+atom": StateAtom, "full+totalcap": StateTotalCap}[self.config.truncation]
         if t is None:  # get full time series
             states = [cls.from_vector(self.config, state.full()[:,0]) for state in self.result.states]
             return [state.atom_density_matrix() for state in states]

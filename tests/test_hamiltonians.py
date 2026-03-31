@@ -6,8 +6,8 @@ import qutip
 
 from utilities import Config, NumberState
 from hamiltonians import (
-    HamiltonianFull, HamiltonianTruncated, HamiltonianAtom, hamiltonian,
-    Hamiltonian,
+    HamiltonianFull, HamiltonianTruncated, HamiltonianAtom, HamiltonianTotalCap,
+    hamiltonian, Hamiltonian,
 )
 
 
@@ -46,10 +46,35 @@ class TestComputeDim:
         h = HamiltonianAtom(cfg)
         assert h.compute_dim() == 2 * (1 * 3 + 1) * (3 + 1)  # 32
 
+    def test_totalcap_single_mode(self):
+        from math import comb
+        cfg = make_cfg('full+totalcap', modes=1, excitation_cap=3)
+        h = HamiltonianTotalCap(cfg)
+        assert h.compute_dim() == 2 * comb(3 + 1, 1)  # 8
+
+    def test_totalcap_multi_mode(self):
+        from math import comb
+        cfg = make_cfg('full+totalcap', modes=3, excitation_cap=2)
+        h = HamiltonianTotalCap(cfg)
+        N, M = cfg.excitation_cap, cfg.modes
+        assert h.compute_dim() == 2 * comb(N + M, M)
+
     @pytest.mark.parametrize("truncation,cls", [
         ('full', HamiltonianFull),
         ('truncated', HamiltonianTruncated),
         ('truncated+atom', HamiltonianAtom),
+        ('full+totalcap', HamiltonianTotalCap),
+    ])
+    def test_all_states_count_matches_dim(self, truncation, cls):
+        cfg = make_cfg(truncation)
+        h = cls(cfg)
+        assert sum(1 for _ in h.all_states()) == h.compute_dim()
+
+    @pytest.mark.parametrize("truncation,cls", [
+        ('full', HamiltonianFull),
+        ('truncated', HamiltonianTruncated),
+        ('truncated+atom', HamiltonianAtom),
+        ('full+totalcap', HamiltonianTotalCap),
     ])
     def test_matrix_shape_matches_dim(self, truncation, cls):
         cfg = make_cfg(truncation)

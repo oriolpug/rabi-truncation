@@ -10,7 +10,7 @@ allowing Gaussian wavepacket initialisation as a superposition over modes.
 """
 
 import numpy as np
-from math import factorial
+from math import factorial, comb
 from abc import ABC, abstractmethod
 from itertools import product as iterproduct
 from typing import Optional
@@ -114,6 +114,49 @@ class AtomBasis:
                 for n_atom in range(N + 1):
                     for atom in ['g', 'e']:
                         yield {f'n{m+1}': n, 'n_atom': n_atom, 'atom': atom}
+
+
+def _compositions(n, k):
+    """All ordered k-tuples of non-negative integers summing to n."""
+    if k == 1:
+        yield (n,)
+        return
+    for i in range(n + 1):
+        for rest in _compositions(n - i, k - 1):
+            yield (i,) + rest
+
+
+class TotalCapBasis:
+    """Basis for HamiltonianTotalCap / StateTotalCap: all Fock states with total photon number ≤ N.
+
+    dim = 2 * C(N + M, M)  (polynomial in both N and M, unlike FullBasis which is (N+1)^M).
+    """
+
+    def __new__(cls, *args, **kwargs):
+        if cls is TotalCapBasis:
+            raise TypeError("TotalCapBasis is a mixin and cannot be instantiated directly")
+        return super().__new__(cls)
+
+    def compute_dim(self) -> int:
+        N, M = self.config.excitation_cap, self.config.modes
+        return 2 * comb(N + M, M)
+
+    def state_to_index(self, state: dict) -> int:
+        if not hasattr(self, '_totalcap_index_map'):
+            self._totalcap_index_map = {
+                (tuple(s.get(f'n{m+1}', 0) for m in range(self.config.modes)), s['atom']): i
+                for i, s in enumerate(self.all_states())
+            }
+        key = (tuple(state.get(f'n{m+1}', 0) for m in range(self.config.modes)), state['atom'])
+        return self._totalcap_index_map[key]
+
+    def all_states(self):
+        N, M = self.config.excitation_cap, self.config.modes
+        for total in range(N + 1):
+            for ns in _compositions(total, M):
+                for atom in ['g', 'e']:
+                    yield {f'n{m+1}': ns[m] for m in range(M)} | {'atom': atom}
+
 # ---------------------------------------------------------------------------
 # State base and concrete classes
 # ---------------------------------------------------------------------------
@@ -281,8 +324,38 @@ class StateAtom(AtomBasis, State):
 
             self.v /= np.linalg.norm(self.v)
 
+class StateTotalCap(TotalCapBasis, State):
+    def build_vector(self):
+        M, N = self.config.modes, self.config.excitation_cap
+        atom_coeffs = self.config.atom_coeffs
+
+        if isinstance(self.state_type, NumberState):
+            n = self.state_type.number
+            for m in range(M):
+                base = {f'n{mm+1}': (n if mm == m else 0) for mm in range(M)}
+                for atom, a_coeff in atom_coeffs.items():
+                    self.v[self.state_to_index(base | {'atom': atom})] += self.ck[m] * a_coeff
+
+        elif isinstance(self.state_type, CoherentState):
+            alpha = self.state_type.alpha
+            for state in self.all_states():
+                atom = state['atom']
+                a_coeff = atom_coeffs.get(atom, 0)
+                if a_coeff == 0:
+                    continue
+                coeff = a_coeff * np.prod([_coherent_coeff(alpha * self.ck[m], state.get(f'n{m+1}', 0)) for m in range(M)])
+                self.v[self.state_to_index(state)] += coeff
+
+        self.v /= np.linalg.norm(self.v)
+
+
 def state(config: Config, v: Optional[np.ndarray] = None) -> qutip.Qobj:
-    cls = {"truncated": StateTruncated, "truncated+atom": StateAtom, "full": StateFull}[config.truncation]
+    cls = {
+        "truncated": StateTruncated,
+        "truncated+atom": StateAtom,
+        "full": StateFull,
+        "full+totalcap": StateTotalCap,
+    }[config.truncation]
     if v is not None:
         return cls.from_vector(config, v).to_qobj()
     return cls(config, config.state).to_qobj()
