@@ -28,31 +28,36 @@ def compute_and_evolve(N_max: int = 10, g: float = 0.01, alpha: complex = 1 + 0j
     final_states = []
 
     for N in range(1, N_max + 1):
-        config = Config(
-            modes=64,
-            length=20,
-            excitation_cap=N,
-            g=g,
-            RWA=RWA,
-            state=CoherentState(alpha),
-            truncation="full+totalcap",
-        )
+        try:
+            config = Config(
+                modes=64,
+                length=20,
+                excitation_cap=N,
+                g=g,
+                RWA=RWA,
+                state=CoherentState(alpha),
+                truncation="full+totalcap",
+            )
 
-        sim = Simulation(config)
-        sim.time_evolve()
+            sim = Simulation(config)
+            sim.time_evolve()
 
-        final_vec = sim.result.states[-1].full()[:, 0]
-        final_state = StateTotalCap.from_vector(config, final_vec)
-        final_states.append(final_state)
+            final_vec = sim.result.states[-1].full()[:, 0]
+            final_state = StateTotalCap.from_vector(config, final_vec)
+            final_states.append(final_state)
 
-        print(f"  N={N:2d}  dim={sim.H.shape[0]}  done")
+            print(f"  N={N:2d}  dim={sim.H.shape[0]}  done")
+        except Exception as e:
+            print(f"  N={N:2d}  ERROR: {e} — stopping loop")
+            break
 
     # F(N) = |<psi(N+1)|psi(N)>|^2 — pass larger-N state first so that
     # common_basis returns type(state2) = the smaller basis as the reference
-    N_values = list(range(1, N_max))
+    n_ran = len(final_states)
+    N_values = list(range(1, n_ran))
     fidelities = [
         fidelity_statevector(final_states[i + 1], final_states[i])
-        for i in range(N_max - 1)
+        for i in range(n_ran - 1)
     ]
 
     return N_values, fidelities

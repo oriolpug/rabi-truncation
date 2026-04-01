@@ -23,7 +23,12 @@ def fidelity_statevector(state1: states.State , state2: states.State) -> float:
     # Determine common (smallest) basis first (Truncated < Atom < Full)
     common = common_basis(state1, state2)
 
-    ref = state1 if isinstance(state1, common) else state2
+    if isinstance(state1, common) and isinstance(state2, common):
+        ref = state1 if state1.compute_dim() <= state2.compute_dim() else state2
+    elif isinstance(state1, common):
+        ref = state1
+    else:
+        ref = state2
     fidelity = 0
     for basis_element in ref.all_states():
         fidelity += np.conj(state1[basis_element]) * state2[basis_element]
