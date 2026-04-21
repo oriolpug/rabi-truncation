@@ -16,7 +16,7 @@ from states import StateTotalCap
 from fidelities import fidelity_statevector
 
 
-def compute_and_evolve(N_max: int = 10, g: float = 0.01, alpha: complex = 1 + 0j, RWA: bool = False):
+def compute_and_evolve(N_max: int = 10, g: float = 0.01, alpha: complex = 1 + 0j, RWA: bool = False, modes: int = 64):
     """
     Run full-basis simulations for N = 1 .. N_max and return consecutive fidelities.
 
@@ -30,7 +30,7 @@ def compute_and_evolve(N_max: int = 10, g: float = 0.01, alpha: complex = 1 + 0j
     for N in range(1, N_max + 1):
         try:
             config = Config(
-                modes=64,
+                modes=modes,
                 length=20,
                 excitation_cap=N,
                 g=g,
@@ -65,6 +65,7 @@ def compute_and_evolve(N_max: int = 10, g: float = 0.01, alpha: complex = 1 + 0j
 
 def main(**kwargs):
     N_max = int(kwargs.get('N', 10))
+    modes = int(kwargs.get('modes', 64))
 
     alpha = kwargs.get('alpha', 1.0)
     if not isinstance(alpha, list):
@@ -86,7 +87,7 @@ def main(**kwargs):
     for gi in g:
         for ai in alpha:
             print(f"Running g={gi}, alpha={ai}, RWA={RWA}")
-            N_values, fidelities = compute_and_evolve(N_max=N_max, g=gi, alpha=ai, RWA=RWA)
+            N_values, fidelities = compute_and_evolve(N_max=N_max, g=gi, alpha=ai, RWA=RWA, modes=modes)
             ax.plot(N_values, fidelities, marker='o', label=f'g={gi}, α={ai}')
 
     ax.set_xlabel('N')
