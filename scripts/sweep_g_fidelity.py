@@ -8,6 +8,7 @@ time-averaged state fidelity of each truncation against the full simulation.
 
 import argparse
 import sys
+import os
 from dataclasses import replace
 from pathlib import Path
 
