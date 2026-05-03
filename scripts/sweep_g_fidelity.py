@@ -14,8 +14,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-ROOT = Path(__file__).parent
-sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from utilities import Config, NumberState  # noqa: E402
 from simulation import Simulation  # noqa: E402
