@@ -147,7 +147,7 @@ def main():
     p.add_argument("--t", type=float, default=10.0)
     p.add_argument("--dt", type=float, default=0.1)
     p.add_argument("--out", type=str,
-                   default="/results/fidelity_vs_g.png")
+                   default="results/fidelity_vs_g.png")
     args = p.parse_args()
 
     base_config = Config(
