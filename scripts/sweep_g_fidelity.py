@@ -6,8 +6,14 @@ states with total photon number across modes ≤ N (dim = 2·C(N+M, M)), so the
 excitation cap is global, not per-mode.
 
 For each g value, runs three simulations (full+totalcap, truncated,
-truncated+atom) with otherwise identical parameters, then computes the
-time-averaged state fidelity of each truncation against the reference.
+truncated+atom) with otherwise identical parameters, then computes three
+time-averaged fidelities of each truncation against the reference:
+
+  1. F_state    — full state fidelity |<ψ_ref|ψ_trunc>|²
+  2. F_atom     — fidelity of the 2x2 atom reduced density matrix
+  3. F_photon_b — F_state / F_atom (proxy for the photon-sector fidelity;
+                  computing the photon reduced density matrix directly is
+                  prohibitively expensive)
 """
 
 import argparse
@@ -18,6 +24,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import qutip
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
@@ -35,6 +42,7 @@ STATE_CLS = {
 }
 
 REFERENCE = "full+totalcap"
+SCHEMES = ["truncated", "truncated+atom"]
 
 
 def run(config: Config) -> Simulation:
@@ -49,43 +57,82 @@ def wrap_states(sim: Simulation):
     return [cls.from_vector(sim.config, s.full()[:, 0]) for s in sim.result.states]
 
 
-def time_averaged_fidelity(states_a, states_b) -> float:
-    fids = [fidelity_statevector(a, b) for a, b in zip(states_a, states_b)]
-    return float(np.mean(fids))
+def fidelity_atom(s1, s2) -> float:
+    """Fidelity of the 2x2 atom reduced density matrices in the |<·|·>|² convention.
+
+    qutip.fidelity returns Tr √(√ρ σ √ρ); we square it so that for pure states
+    it agrees with |<ψ|φ>|² (matching `fidelity_statevector`).
+    """
+    rho1 = qutip.Qobj(s1.atom_density_matrix())
+    rho2 = qutip.Qobj(s2.atom_density_matrix())
+    return float(qutip.fidelity(rho1, rho2)) ** 2
+
+
+def fidelities_over_time(states_a, states_b):
+    """Return (F_state, F_atom, F_photon_bound) time series."""
+    f_state = np.array([fidelity_statevector(a, b) for a, b in zip(states_a, states_b)])
+    f_atom = np.array([fidelity_atom(a, b) for a, b in zip(states_a, states_b)])
+    # Avoid div-by-zero: when atom fidelity collapses, the bound is undefined.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        f_photon = np.where(f_atom > 0, f_state / f_atom, np.nan)
+    return f_state, f_atom, f_photon
 
 
 def sweep(base_config: Config, g_values: np.ndarray):
-    fid_trunc = np.empty_like(g_values, dtype=float)
-    fid_atom = np.empty_like(g_values, dtype=float)
+    """Returns dict[scheme] -> dict[metric] -> array over g."""
+    metrics = ["state", "atom", "photon_bound"]
+    out = {scheme: {m: np.empty_like(g_values, dtype=float) for m in metrics}
+           for scheme in SCHEMES}
 
     for i, g in enumerate(g_values):
         print(f"\n[{i+1}/{len(g_values)}] g = {g:.4g}")
-
         ref_states = wrap_states(run(replace(base_config, g=float(g), truncation=REFERENCE)))
-        trunc_states = wrap_states(run(replace(base_config, g=float(g), truncation="truncated")))
-        atom_states = wrap_states(run(replace(base_config, g=float(g), truncation="truncated+atom")))
 
-        fid_trunc[i] = time_averaged_fidelity(trunc_states, ref_states)
-        fid_atom[i] = time_averaged_fidelity(atom_states, ref_states)
-        print(f"    truncated      vs {REFERENCE}: {fid_trunc[i]:.6f}")
-        print(f"    truncated+atom vs {REFERENCE}: {fid_atom[i]:.6f}")
+        for scheme in SCHEMES:
+            sch_states = wrap_states(run(replace(base_config, g=float(g), truncation=scheme)))
+            f_state, f_atom, f_photon = fidelities_over_time(sch_states, ref_states)
+            out[scheme]["state"][i] = float(np.mean(f_state))
+            out[scheme]["atom"][i] = float(np.mean(f_atom))
+            out[scheme]["photon_bound"][i] = float(np.nanmean(f_photon))
+            print(f"    {scheme:<16} state={out[scheme]['state'][i]:.6f}  "
+                  f"atom={out[scheme]['atom'][i]:.6f}  "
+                  f"photon~={out[scheme]['photon_bound'][i]:.6f}")
 
-    return fid_trunc, fid_atom
+    return out
 
 
-def plot(g_values, fid_trunc, fid_atom, out_path: Path, modes: int, cap: int):
+def _plot_one(g_values, results, metric, ylabel, title, out_path: Path):
     fig, ax = plt.subplots(figsize=(7, 4.5))
-    ax.plot(g_values, fid_trunc, "o-", label=f"truncated vs {REFERENCE}")
-    ax.plot(g_values, fid_atom, "s-", label=f"truncated+atom vs {REFERENCE}")
+    markers = {"truncated": "o-", "truncated+atom": "s-"}
+    for scheme in SCHEMES:
+        ax.plot(g_values, results[scheme][metric], markers[scheme],
+                label=f"{scheme} vs {REFERENCE}")
     ax.set_xscale("log")
     ax.set_xlabel("coupling g")
-    ax.set_ylabel("time-averaged fidelity")
-    ax.set_title(f"Truncation fidelity vs coupling (modes={modes}, N={cap})")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
     ax.grid(True, which="both", alpha=0.3)
     ax.legend()
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
-    print(f"\nPlot saved to {out_path}")
+    plt.close(fig)
+    print(f"Plot saved to {out_path}")
+
+
+def plot_all(g_values, results, base_out: Path, modes: int, cap: int):
+    suffix_title = f"(modes={modes}, N={cap})"
+    stem, ext = base_out.stem, base_out.suffix or ".png"
+    parent = base_out.parent
+    plots = [
+        ("state",        "time-avg state fidelity",        f"State fidelity vs g {suffix_title}",
+         parent / f"{stem}_state{ext}"),
+        ("atom",         "time-avg atom fidelity",         f"Atom reduced-DM fidelity vs g {suffix_title}",
+         parent / f"{stem}_atom{ext}"),
+        ("photon_bound", "F_state / F_atom (photon proxy)", f"Photon-sector fidelity bound vs g {suffix_title}",
+         parent / f"{stem}_photon_bound{ext}"),
+    ]
+    for metric, ylabel, title, path in plots:
+        _plot_one(g_values, results, metric, ylabel, title, path)
 
 
 def main():
@@ -113,15 +160,17 @@ def main():
     )
 
     g_values = np.logspace(np.log10(args.g_min), np.log10(args.g_max), args.n_points)
-    fid_trunc, fid_atom = sweep(base_config, g_values)
+    results = sweep(base_config, g_values)
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    plot(g_values, fid_trunc, fid_atom, out, args.modes, args.cap)
+    plot_all(g_values, results, out, args.modes, args.cap)
 
-    np.savez(out.with_suffix(".npz"),
-             g=g_values, fid_truncated=fid_trunc, fid_truncated_atom=fid_atom)
-    print(f"Data saved to {out.with_suffix('.npz')}")
+    npz_path = out.with_suffix(".npz")
+    np.savez(npz_path, g=g_values,
+             **{f"{scheme.replace('+', '_')}_{metric}": results[scheme][metric]
+                for scheme in SCHEMES for metric in ("state", "atom", "photon_bound")})
+    print(f"Data saved to {npz_path}")
 
 
 if __name__ == "__main__":
