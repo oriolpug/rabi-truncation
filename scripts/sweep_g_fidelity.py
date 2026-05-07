@@ -28,7 +28,7 @@ import qutip
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from utilities import Config, NumberState  # noqa: E402
+from utilities import Config, NumberState, CoherentState  # noqa: E402
 from simulation import Simulation  # noqa: E402
 from states import StateFull, StateTruncated, StateAtom, StateTotalCap  # noqa: E402
 from fidelities import fidelity_statevector  # noqa: E402
@@ -148,14 +148,26 @@ def main():
     p.add_argument("--dt", type=float, default=0.1)
     p.add_argument("--out", type=str,
                    default="results/fidelity_vs_g.png")
+    p.add_argument("--init-state", choices=["number", "coherent"], default="number",
+                   help="Initial photon state type (default: number).")
+    p.add_argument("--n", type=int, default=1,
+                   help="Fock number for --init-state=number (default: 1).")
+    p.add_argument("--alpha", type=str, default="1.0",
+                   help="Complex amplitude for --init-state=coherent, "
+                        "parsed as a Python complex (e.g. '1+0.5j'). Default: 1.0.")
     args = p.parse_args()
+
+    if args.init_state == "number":
+        init_state = NumberState(args.n)
+    else:
+        init_state = CoherentState(complex(args.alpha))
 
     base_config = Config(
         modes=args.modes,
         excitation_cap=args.cap,
         t=args.t,
         dt=args.dt,
-        state=NumberState(1),
+        state=init_state,
         atom_state="g",
     )
 
