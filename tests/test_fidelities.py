@@ -18,15 +18,17 @@ def make_cfg(truncation='full', modes=1, excitation_cap=3):
 
 class TestCommonBasis:
     @pytest.mark.parametrize("t1,cls1,t2,cls2,expected", [
+        # Same type → that type
         ('full',         StateFull,      'full',         StateFull,      StateFull),
-        ('full',         StateFull,      'truncated',    StateTruncated, StateTruncated),
-        ('full',         StateFull,      'truncated+atom', StateAtom,    StateAtom),
-        ('truncated',    StateTruncated, 'full',         StateFull,      StateFull),
         ('truncated',    StateTruncated, 'truncated',    StateTruncated, StateTruncated),
-        ('truncated',    StateTruncated, 'truncated+atom', StateAtom,    StateAtom),
-        ('truncated+atom', StateAtom,   'full',         StateFull,      StateFull),
-        ('truncated+atom', StateAtom,   'truncated',    StateTruncated, StateTruncated),
         ('truncated+atom', StateAtom,   'truncated+atom', StateAtom,    StateAtom),
+        # Heterogeneous → StateTruncated (universal common subspace)
+        ('full',         StateFull,      'truncated',    StateTruncated, StateTruncated),
+        ('full',         StateFull,      'truncated+atom', StateAtom,    StateTruncated),
+        ('truncated',    StateTruncated, 'full',         StateFull,      StateTruncated),
+        ('truncated',    StateTruncated, 'truncated+atom', StateAtom,    StateTruncated),
+        ('truncated+atom', StateAtom,   'full',         StateFull,      StateTruncated),
+        ('truncated+atom', StateAtom,   'truncated',    StateTruncated, StateTruncated),
     ])
     def test_all_pairs(self, t1, cls1, t2, cls2, expected):
         s1 = cls1(make_cfg(t1), NumberState(1))

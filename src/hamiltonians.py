@@ -130,12 +130,15 @@ class HamiltonianTruncated(TruncatedBasis, Hamiltonian):
         w, ks = self.config.w_atom, self.config.frequencies
 
         for state in self.all_states():
-            key = next(k for k in state if k != 'atom')
-            m = int(key[1:]) - 1
-            n = state[key]
             atom = state.get('atom', 0)
-
-            self[state, state] = hbar * c * n * np.abs(ks[m]) + self.atom_index(atom) * w
+            key = next((k for k in state if k != 'atom'), None)
+            if key is None:
+                photon_energy = 0.0
+            else:
+                m = int(key[1:]) - 1
+                n = state[key]
+                photon_energy = hbar * c * n * np.abs(ks[m])
+            self[state, state] = photon_energy + self.atom_index(atom) * w
 
     def interaction(self):
         hbar, c = self.config.hbar, self.config.c
@@ -159,13 +162,16 @@ class HamiltonianAtom(AtomBasis, Hamiltonian):
         w, ks = self.config.w_atom, self.config.frequencies
 
         for state in self.all_states():
-            key = next(k for k in state if k not in ['atom', 'n_atom'])
-            m = int(key[1:]) - 1
-            n = state[key]
             n_atom = state.get("n_atom", 0)
             atom = state.get('atom', 0)
-
-            self[state, state] = hbar * c * n * np.abs(ks[m]) + hbar * n_atom * np.abs(w) + self.atom_index(atom) * w
+            key = next((k for k in state if k not in ['atom', 'n_atom']), None)
+            if key is None:
+                photon_energy = 0.0
+            else:
+                m = int(key[1:]) - 1
+                n = state[key]
+                photon_energy = hbar * c * n * np.abs(ks[m])
+            self[state, state] = photon_energy + hbar * n_atom * np.abs(w) + self.atom_index(atom) * w
 
     def transition_sign(self, ket, bra) -> int:
         # Atom gains -> +, atom loses -> -

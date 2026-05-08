@@ -119,8 +119,16 @@ def _plot_one(g_values, results, metric, ylabel, title, out_path: Path):
     print(f"Plot saved to {out_path}")
 
 
-def plot_all(g_values, results, base_out: Path, modes: int, cap: int):
-    suffix_title = f"(modes={modes}, N={cap})"
+def _format_init_state(state) -> str:
+    if isinstance(state, NumberState):
+        return f"|n={state.number}>"
+    if isinstance(state, CoherentState):
+        return f"|α={state.alpha}>"
+    return type(state).__name__
+
+
+def plot_all(g_values, results, base_out: Path, modes: int, cap: int, init_state):
+    suffix_title = f"(modes={modes}, N={cap}, init={_format_init_state(init_state)})"
     stem, ext = base_out.stem, base_out.suffix or ".png"
     parent = base_out.parent
     plots = [
@@ -176,7 +184,7 @@ def main():
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    plot_all(g_values, results, out, args.modes, args.cap)
+    plot_all(g_values, results, out, args.modes, args.cap, base_config.state)
 
     npz_path = out.with_suffix(".npz")
     np.savez(npz_path, g=g_values,

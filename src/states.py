@@ -77,8 +77,12 @@ class TruncatedBasis:
         N = self.config.excitation_cap
         M = self.config.modes
 
+        # Photon vacuum (yielded once, not once per mode)
+        for atom in ['g', 'e']:
+            yield {'atom': atom}
+        # Single-mode excitations
         for m in range(M):
-            for n in range(N + 1):
+            for n in range(1, N + 1):
                 for atom in ['g', 'e']:
                     yield {f'n{m+1}': n, 'atom': atom}
 
@@ -109,8 +113,13 @@ class AtomBasis:
         N = self.config.excitation_cap
         M = self.config.modes
 
+        # Photon vacuum sector (n_atom varies); yielded once, not once per mode
+        for n_atom in range(N + 1):
+            for atom in ['g', 'e']:
+                yield {'n_atom': n_atom, 'atom': atom}
+        # Single-mode excitations
         for m in range(M):
-            for n in range(N + 1):
+            for n in range(1, N + 1):
                 for n_atom in range(N + 1):
                     for atom in ['g', 'e']:
                         yield {f'n{m+1}': n, 'n_atom': n_atom, 'atom': atom}
