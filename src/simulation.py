@@ -10,6 +10,7 @@ Orchestrates the simulation flow:
 from states import *
 from utilities import *
 from hamiltonians import *
+from energy_profile import EnergyProfile
 import numpy as np
 
 class Simulation:
@@ -71,9 +72,52 @@ class Simulation:
 
     def compute_energy(self, t: float = None):
         if t is None:  # get full time series
-            return [qutip.expect(self.H, state.full()[:, 0]) for state in self.result.states]
+            return [qutip.expect(self.H, state) for state in self.result.states]
         elif t == -1:  # get last value
-            return qutip.expect(self.H, self.result.states[-1].full()[:, 0])
+            return qutip.expect(self.H, self.result.states[-1])
         else:  # get value at index closest to t
             idx = int(t / self.config.dt)
-            return qutip.expect(self.H, self.result.states[idx].full()[:, 0])
+            return qutip.expect(self.H, self.result.states[idx])
+
+    def _energy_profile(self) -> EnergyProfile:
+        if not hasattr(self, "_energy_profile_obj"):
+            self._energy_profile_obj = EnergyProfile(self.config, self.H)
+        return self._energy_profile_obj
+
+    def _states_for(self, t: float):
+        """Resolve the `t` convention to a list of state vectors (see compute_energy)."""
+        if t is None:
+            return [state.full()[:, 0] for state in self.result.states]
+        elif t == -1:
+            return [self.result.states[-1].full()[:, 0]]
+        else:
+            idx = int(t / self.config.dt)
+            return [self.result.states[idx].full()[:, 0]]
+
+    def compute_energy_profile_modes(self, t: float = None):
+        """Energy resolved by field mode.
+
+        Returns ``(mode_axis, E_modes, atom_axis_x, E_atom)`` where ``mode_axis`` is the
+        wave-vector grid of the field modes and the bare-atom energy sits at k=0. For a
+        full time series (``t is None``) ``E_modes`` has shape ``(n_times, n_modes)`` and
+        ``E_atom`` has shape ``(n_times,)``; otherwise both are for the single requested time.
+        """
+        ep = self._energy_profile()
+        results = [ep.energy_modes_vec(psi) for psi in self._states_for(t)]
+        E_modes = np.array([r[0] for r in results])
+        E_atom = np.array([r[1] for r in results])
+        if t is not None:
+            E_modes, E_atom = E_modes[0], float(E_atom[0])
+        return ep.mode_axis, E_modes, 0.0, E_atom
+
+    def compute_energy_profile_excitations(self, t: float = None):
+        """Energy resolved by photon excitation number nu.
+
+        Returns ``(excitation_axis, E_nu)``. For a full time series ``E_nu`` has shape
+        ``(n_times, nu_max + 1)``; otherwise shape ``(nu_max + 1,)`` for the requested time.
+        """
+        ep = self._energy_profile()
+        profile = np.array([ep.energy_excitations_vec(psi) for psi in self._states_for(t)])
+        if t is not None:
+            profile = profile[0]
+        return ep.excitation_axis, profile
