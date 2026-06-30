@@ -71,6 +71,21 @@ class TestComputeDim:
         assert sum(1 for _ in h.all_states()) == h.compute_dim()
 
     @pytest.mark.parametrize("truncation,cls", [
+        ('truncated', HamiltonianTruncated),
+        ('truncated+atom', HamiltonianAtom),
+        ('full+totalcap', HamiltonianTotalCap),
+    ])
+    def test_mode_selection_resizes_hilbert_space(self, truncation, cls):
+        # mode_selection shrinks the mode count, and the Hamiltonian (built via the
+        # factory, so the full pipeline is exercised) must resize to match.
+        cfg = make_cfg(truncation, modes=64, length=20, excitation_cap=2,
+                       mode_selection=True)
+        h = cls(cfg)
+        H = hamiltonian(cfg)
+        assert cfg.modes < 64
+        assert h.compute_dim() == H.shape[0]
+
+    @pytest.mark.parametrize("truncation,cls", [
         ('full', HamiltonianFull),
         ('truncated', HamiltonianTruncated),
         ('truncated+atom', HamiltonianAtom),

@@ -3,7 +3,8 @@ import numpy as np
 import pytest
 import qutip
 
-from utilities import Config, NumberState, CoherentState, calculate_wave_vectors, purity, entropy
+from utilities import (Config, NumberState, CoherentState, calculate_wave_vectors,
+                       select_modes, purity, entropy)
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +74,14 @@ class TestConfig:
         cfg = Config(modes=8)
         assert 0.0 not in cfg.ks
 
+    def test_multimode_frequencies_zero_free_and_consistent(self):
+        # Baseline fix: the simulation grid (frequencies) is the zero-free grid,
+        # and its length matches the (decremented) mode count.
+        cfg = Config(modes=8)
+        assert 0.0 not in list(cfg.frequencies)
+        assert len(cfg.frequencies) == cfg.modes
+        np.testing.assert_array_equal(np.asarray(cfg.frequencies), np.asarray(cfg.ks))
+
     def test_state_field_stored(self):
         st = NumberState(2)
         cfg = Config(modes=1, state=st)
@@ -81,6 +90,58 @@ class TestConfig:
     def test_rwa_default_false(self):
         cfg = Config(modes=1)
         assert cfg.RWA is False
+
+
+# ---------------------------------------------------------------------------
+# select_modes + Config(mode_selection=True)
+# ---------------------------------------------------------------------------
+
+class TestSelectModes:
+    def test_mask_length_and_type(self):
+        freqs = calculate_wave_vectors(16, 20.0)
+        mask = select_modes(freqs, k_photon=1.0, sigma=1.0, w_atom=1.0,
+                            photon_factor=1.5, atom_factor=0.25)
+        assert mask.dtype == bool
+        assert len(mask) == len(freqs)
+        assert mask.any()
+
+    def test_selected_obey_predicate_or_are_nearest(self):
+        freqs = np.asarray(calculate_wave_vectors(32, 20.0))
+        k0, sigma, w = 0.8, 1.0, 1.2
+        pf, af = 1.5, 0.25
+        mask = select_modes(freqs, k0, sigma, w, pf, af)
+        centres = [(k0, pf * sigma), (w, af * sigma), (-w, af * sigma)]
+        nearest = {np.argmin(np.abs(freqs - c)) for c, _ in centres}
+        for i, keep in enumerate(mask):
+            if not keep:
+                continue
+            in_window = any(abs(freqs[i] - c) <= h for c, h in centres)
+            assert in_window or i in nearest
+
+    def test_each_centre_represented(self):
+        # Even with a tiny sigma (all windows narrower than the spacing), the nearest
+        # mode to each of the three centres must be present.
+        freqs = np.asarray(calculate_wave_vectors(32, 20.0))
+        k0, sigma, w = 0.5, 1e-6, 1.0
+        mask = select_modes(freqs, k0, sigma, w, 1.5, 0.25)
+        for centre in (k0, w, -w):
+            assert mask[np.argmin(np.abs(freqs - centre))]
+
+    def test_config_mode_selection_subset_and_consistent(self):
+        full = Config(modes=64, length=20)
+        sel = Config(modes=64, length=20, mode_selection=True)
+        # consistency invariant
+        assert len(sel.frequencies) == sel.modes
+        # strictly fewer modes, and a subset of the full zero-free grid
+        assert sel.modes < full.modes
+        assert set(np.round(sel.frequencies, 10)).issubset(set(np.round(full.frequencies, 10)))
+        assert 0.0 not in list(sel.frequencies)
+
+    def test_config_mode_selection_off_unchanged(self):
+        # Regression guard: default path still drops exactly the zero mode.
+        cfg = Config(modes=8)
+        assert cfg.modes == 7
+        assert cfg.mode_selection is False
 
 
 # ---------------------------------------------------------------------------

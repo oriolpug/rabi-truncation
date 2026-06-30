@@ -87,15 +87,25 @@ class Config:
           counts tractable.
 
         Default: ``"full"``.
+    mode_selection : bool
+        If ``True`` (multi-mode only), keep only the physically relevant modes:
+        those within ``photon_window`` std-devs of ``k_photon`` plus the atom
+        resonance shells at ``|k| = w_atom`` (within ``atom_window`` std-devs).
+        Shrinks the Hilbert space. See ``select_modes``. Default: ``False``.
+    photon_window : float
+        Photon-window half-width in units of ``sigma_photon``. Default: 1.5.
+    atom_window : float
+        Atom-shell half-width in units of ``sigma_photon``. Default: 0.25.
 
     Attributes set by ``__post_init__``
     ------------------------------------
     frequencies : np.ndarray
-        Full wave-vector grid (including zero if present). In single-mode
-        operation this is ``[k_photon]``.
+        Wave-vector grid the simulation runs on. Multi-mode: zero-free (and, if
+        ``mode_selection``, restricted to the selected modes), with
+        ``len(frequencies) == modes``. Single-mode: ``[k_photon]``.
     ks : np.ndarray
-        Zero-free wave-vector grid used by the Hamiltonian (only set when
-        ``modes > 1`` and k=0 is present).
+        Same zero-free / selected grid as ``frequencies`` (only set when
+        ``modes > 1`` and k=0 is present, or when ``mode_selection`` is on).
     atom_coeffs : dict
         Mapping ``{'g': cg, 'e': ce}`` derived from ``atom_state``.
     """
@@ -131,6 +141,11 @@ class Config:
     RWA: bool = False
     truncation: str = "full"
 
+    # Stricter photon-mode selection (multi-mode only; opt-in)
+    mode_selection: bool = False
+    photon_window: float = 1.5   # photon-window half-width, in units of sigma_photon
+    atom_window: float = 0.25    # atom-shell half-width, in units of sigma_photon
+
     def __post_init__(self):
         match self.atom_state:
             case "g":
@@ -146,12 +161,24 @@ class Config:
 
         if self.modes > 1:
             self.frequencies = calculate_wave_vectors(self.modes, self.length)
-            # If k = 0 is in the vector, take it out
+            # If k = 0 is in the vector, take it out: a photon in the zero-frequency mode
+            # carries no energy and does not couple (g(0)=0), so it is degenerate with the
+            # vacuum and must not be a separate mode.
             zero = np.argwhere(self.frequencies == 0)
             if len(zero) > 0:
                 zero = zero[0][0]
                 self.ks = np.concatenate((self.frequencies[:zero], self.frequencies[zero + 1:]))
                 self.modes -= 1
+                self.frequencies = self.ks  # run the simulation on the zero-free grid
+
+            # Optional stricter selection: keep only modes near the photon wavepacket and
+            # the atom resonance shells (|k| = w_atom). Keeps modes/frequencies consistent.
+            if self.mode_selection:
+                mask = select_modes(self.frequencies, self.k_photon, self.sigma_photon,
+                                    self.w_atom, self.photon_window, self.atom_window)
+                self.frequencies = np.asarray(self.frequencies)[mask]
+                self.modes = len(self.frequencies)
+                self.ks = self.frequencies
         else:
             # Single-mode cavity: align frequency to photon
             self.frequencies = [self.k_photon]
@@ -178,6 +205,44 @@ def calculate_wave_vectors(num_modes : int, length: float) -> np.ndarray:
         wave_vectors = np.roll(wave_vectors, -1)
 
     return wave_vectors
+
+def select_modes(frequencies, k_photon, sigma, w_atom, photon_factor, atom_factor):
+    """Boolean mask selecting the physically relevant photon modes.
+
+    Keeps modes inside the photon window ``|k - k_photon| <= photon_factor * sigma``
+    unioned with the two atom resonance shells ``|k -/+ w_atom| <= atom_factor * sigma``
+    (resonance at ``|k| = w_atom``). For each of the three centres
+    (``k_photon``, ``+w_atom``, ``-w_atom``), if its window contains no grid mode the single
+    nearest mode is kept instead, so the selection is never empty.
+
+    Parameters
+    ----------
+    frequencies : array_like
+        The (zero-free) wave-vector grid to select from.
+    k_photon, sigma : float
+        Centre and width (k-space std-dev) of the initial photon wavepacket.
+    w_atom : float
+        Atom transition frequency; resonance shells sit at +/- w_atom.
+    photon_factor, atom_factor : float
+        Window half-widths, in units of ``sigma``.
+
+    Returns
+    -------
+    np.ndarray of bool
+        Order-preserving mask over ``frequencies``.
+    """
+    freqs = np.asarray(frequencies, dtype=float)
+    mask = np.zeros(len(freqs), dtype=bool)
+    centres = [(k_photon, photon_factor * sigma),
+               (w_atom, atom_factor * sigma),
+               (-w_atom, atom_factor * sigma)]
+    for centre, halfwidth in centres:
+        within = np.abs(freqs - centre) <= halfwidth
+        if within.any():
+            mask |= within
+        else:  # window narrower than grid spacing -> keep nearest mode
+            mask[np.argmin(np.abs(freqs - centre))] = True
+    return mask
 
 def purity(rho):
     if not isinstance(rho, Qobj): # " Input needs to be a qutip density matrix (qutip.Qobj)"

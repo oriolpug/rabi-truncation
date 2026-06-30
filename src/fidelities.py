@@ -51,3 +51,85 @@ def fidelity_statevector(state1: states.State , state2: states.State) -> float:
 
     fidelity = np.abs(fidelity) ** 2
     return fidelity
+
+
+def physical_mode_map(config_sub, config_super, atol: float = 1e-9) -> dict:
+    """Map each mode index of the smaller grid to the index in the larger grid.
+
+    Mode selection (``Config.mode_selection``) keeps a *subset* of the wave-vector grid and
+    renumbers it ``0..modes-1``, so the same label ``n{m+1}`` denotes different physical
+    modes in a selected vs unselected simulation. This aligns them by wave-vector: for each
+    index ``j`` of ``config_sub.frequencies`` return the index ``m`` of
+    ``config_super.frequencies`` with the same value.
+
+    Raises
+    ------
+    ValueError
+        If a sub-grid wave-vector is not present in the super-grid (not a subset).
+    """
+    sub = np.asarray(config_sub.frequencies, dtype=float)
+    sup = np.asarray(config_super.frequencies, dtype=float)
+    mapping = {}
+    for j, k in enumerate(sub):
+        matches = np.argwhere(np.isclose(sup, k, atol=atol)).ravel()
+        if len(matches) == 0:
+            raise ValueError(f"sub-grid mode k={k} absent from the super-grid "
+                             f"(grids are not subset-compatible)")
+        mapping[j] = int(matches[0])
+    return mapping
+
+
+def _relabel(label: dict, mode_map: dict) -> dict:
+    """Translate a basis label's field-mode indices via ``mode_map``.
+
+    ``atom`` and the ``n_atom`` oscillator (not a field mode) pass through unchanged.
+    """
+    new = {}
+    for key, val in label.items():
+        if key == 'atom' or key == 'n_atom':
+            new[key] = val
+        else:  # field mode 'n{j+1}'
+            j = int(key[1:]) - 1
+            new[f'n{mode_map[j] + 1}'] = val
+    return new
+
+
+def embed_in_grid(state_sub: states.State, config_super) -> states.State:
+    """Embed a state from a smaller (selected) mode grid into a larger grid's basis.
+
+    Returns a state of the same class as ``state_sub`` living in ``config_super``'s basis,
+    with each amplitude placed at the physically matching mode (modes absent from the
+    sub-grid stay in vacuum). Embedding a normalised state is an isometry, so the result is
+    still normalised.
+    """
+    cls = type(state_sub)
+    mode_map = physical_mode_map(state_sub.config, config_super)
+
+    # Probe instance for basis size / indexing (only needs .config), as in fidelity_statevector.
+    probe = cls.__new__(cls)
+    probe.config = config_super
+
+    v = np.zeros(probe.compute_dim(), dtype=complex)
+    for label in state_sub.all_states():
+        v[probe.state_to_index(_relabel(label, mode_map))] = state_sub[label]
+    return cls.from_vector(config_super, v)
+
+
+def fidelity_mode_selection(state1: states.State, state2: states.State) -> float:
+    """Fidelity between two states of the same physical simulation, one mode-selected.
+
+    The two states share a base wave-vector grid but keep different subsets of modes
+    (e.g. ``mode_selection`` off vs on). Modes are aligned by physical wave-vector: the
+    smaller-grid state is embedded into the larger grid, then the standard
+    ``fidelity_statevector`` is applied. Reduces to plain ``fidelity_statevector`` when the
+    grids are identical. Order-agnostic.
+
+    Both states must use the same truncation scheme; cross-truncation comparison should use
+    ``fidelity_statevector`` directly.
+    """
+    if type(state1) is not type(state2):
+        raise Exception("fidelity_mode_selection requires the same truncation scheme; "
+                        "use fidelity_statevector for cross-truncation comparisons")
+    sub, sup = (state1, state2) if state1.config.modes <= state2.config.modes else (state2, state1)
+    embedded = embed_in_grid(sub, sup.config)
+    return fidelity_statevector(embedded, sup)

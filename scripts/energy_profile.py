@@ -22,6 +22,9 @@ Configurable via command-line key=value pairs (mirrors the other scripts):
   t            total evolution time     (default 20.0)
   dt           time step                (default 0.1)
   RWA          rotating-wave approx     (default False)
+  mode_selection  keep only modes near the photon/atom resonance (default False)
+  photon_window   photon-window half-width in units of sigma (default 1.5)
+  atom_window     atom-shell half-width in units of sigma     (default 0.25)
   out          output directory         (default results/energy_profile_<auto>)
   fps          GIF frames per second    (default 15)
   stride       use every k-th time step (default chosen for ~150 frames)
@@ -46,7 +49,8 @@ from utilities import Config, NumberState, CoherentState
 from simulation import Simulation
 
 
-def run(g, atom, photon_type, alpha, n, N, truncation, modes, L, t, dt, RWA):
+def run(g, atom, photon_type, alpha, n, N, truncation, modes, L, t, dt, RWA,
+        mode_selection=False, photon_window=1.5, atom_window=0.25):
     state_type = CoherentState(alpha) if photon_type == "coherent" else NumberState(n)
     config = Config(
         modes=modes,
@@ -59,6 +63,9 @@ def run(g, atom, photon_type, alpha, n, N, truncation, modes, L, t, dt, RWA):
         t=t,
         dt=dt,
         RWA=RWA,
+        mode_selection=mode_selection,
+        photon_window=photon_window,
+        atom_window=atom_window,
     )
     sim = Simulation(config)
     sim.time_evolve()
@@ -79,13 +86,21 @@ def main(**kwargs):
     dt = float(kwargs.get("dt", 0.1))
     rwa_raw = kwargs.get("RWA", "False")
     RWA = rwa_raw if isinstance(rwa_raw, bool) else rwa_raw.lower() in ("true", "1", "yes")
+    sel_raw = kwargs.get("mode_selection", "False")
+    mode_selection = sel_raw if isinstance(sel_raw, bool) else sel_raw.lower() in ("true", "1", "yes")
+    photon_window = float(kwargs.get("photon_window", 1.5))
+    atom_window = float(kwargs.get("atom_window", 0.25))
     fps = int(kwargs.get("fps", 15))
 
     photon_label = f"coherent(a={alpha})" if photon_type == "coherent" else f"number(n={n})"
     print(f"Running truncation={truncation}, modes={modes}, N={N}, g={g}, atom={atom}, "
-          f"photon={photon_label}, RWA={RWA}")
+          f"photon={photon_label}, RWA={RWA}, mode_selection={mode_selection}")
 
-    sim = run(g, atom, photon_type, alpha, n, N, truncation, modes, L, t, dt, RWA)
+    sim = run(g, atom, photon_type, alpha, n, N, truncation, modes, L, t, dt, RWA,
+              mode_selection=mode_selection, photon_window=photon_window, atom_window=atom_window)
+    if mode_selection:
+        print(f"  mode_selection kept {sim.config.modes} modes (photon_window={photon_window}, "
+              f"atom_window={atom_window})")
 
     times = sim.times
     kmodes, E_modes, _, E_atom = sim.compute_energy_profile_modes()      # (T,M), (T,)
