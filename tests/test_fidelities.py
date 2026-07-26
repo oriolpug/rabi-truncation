@@ -5,7 +5,8 @@ import pytest
 from utilities import Config, NumberState, CoherentState
 from states import StateFull, StateTruncated, StateAtom, StateTotalCap
 from fidelities import (common_basis, fidelity_statevector,
-                        physical_mode_map, embed_in_grid, fidelity_mode_selection)
+                        physical_mode_map, embed_in_grid, fidelity_mode_selection,
+                        fidelity_to_reference)
 
 
 def make_cfg(truncation='full', modes=1, excitation_cap=3):
@@ -182,6 +183,56 @@ class TestFidelityModeSelection:
         st = StateTruncated(full_t, NumberState(1))
         with pytest.raises(Exception):
             fidelity_mode_selection(sf, st)
+
+
+class TestFidelityToReference:
+    def test_same_class_same_grid_equals_statevector(self):
+        cfg = Config(modes=8, length=20, truncation='full+totalcap', excitation_cap=2)
+        a = _unit_state(StateTotalCap, cfg, [({'n1': 1, 'atom': 'g'}, 1.0)])
+        b = _unit_state(StateTotalCap, cfg, [({'n1': 1, 'atom': 'g'}, 1.0)])
+        assert np.isclose(fidelity_to_reference(a, b), 1.0, atol=1e-12)
+        assert np.isclose(fidelity_to_reference(a, b), fidelity_statevector(a, b), atol=1e-12)
+
+    def test_cross_truncation_single_selected_mode_is_one(self):
+        # Candidate: truncated on the selected grid, one excitation in a selected mode.
+        # Reference: full+totalcap on the full grid, same physical mode. Fidelity == 1.
+        full = Config(modes=16, length=20, truncation='full+totalcap', excitation_cap=2,
+                      state=NumberState(1), mode_selection=False)
+        sel = Config(modes=16, length=20, truncation='truncated', excitation_cap=2,
+                     state=NumberState(1), mode_selection=True)
+        m = physical_mode_map(sel, full)[0]
+        candidate = _unit_state(StateTruncated, sel, [(_exc(0), 1.0)])
+        reference = _unit_state(StateTotalCap, full, [(_exc(m), 1.0)])
+        assert np.isclose(fidelity_to_reference(candidate, reference), 1.0, atol=1e-12)
+
+
+class TestFidelityToReferenceEndToEnd:
+    def _sim_states(self, truncation, mode_selection, pw=1.5, aw=0.25):
+        from simulation import Simulation
+        cfg = Config(modes=8, length=20, truncation=truncation, excitation_cap=2,
+                     g=0.1, atom_state='e', state=CoherentState(1.0), t=4.0, dt=0.2,
+                     mode_selection=mode_selection, photon_window=pw, atom_window=aw)
+        sim = Simulation(cfg)
+        sim.time_evolve()
+        cls = {'full+totalcap': StateTotalCap, 'truncated': StateTruncated, 'truncated+atom': StateAtom}[truncation]
+        return [cls.from_vector(cfg, s.full()[:, 0]) for s in sim.result.states]
+
+    def test_ground_truth_vs_itself_is_one(self):
+        gt = self._sim_states('full+totalcap', mode_selection=False)
+        fids = [fidelity_to_reference(c, g) for c, g in zip(gt, gt)]
+        np.testing.assert_allclose(fids, 1.0, atol=1e-9)
+
+    def test_totalcap_selection_wide_windows_is_one(self):
+        gt = self._sim_states('full+totalcap', mode_selection=False)
+        cand = self._sim_states('full+totalcap', mode_selection=True, pw=100.0, aw=100.0)
+        fids = [fidelity_to_reference(c, g) for c, g in zip(cand, gt)]
+        np.testing.assert_allclose(fids, 1.0, atol=1e-9)
+
+    def test_truncated_candidate_in_bounds(self):
+        gt = self._sim_states('full+totalcap', mode_selection=False)
+        cand = self._sim_states('truncated', mode_selection=True, pw=0.5, aw=0.1)
+        fids = np.array([fidelity_to_reference(c, g) for c, g in zip(cand, gt)])
+        assert np.all(fids >= -1e-9) and np.all(fids <= 1.0 + 1e-9)
 
 
 class TestFidelityModeSelectionEndToEnd:

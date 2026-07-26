@@ -133,3 +133,20 @@ def fidelity_mode_selection(state1: states.State, state2: states.State) -> float
     sub, sup = (state1, state2) if state1.config.modes <= state2.config.modes else (state2, state1)
     embedded = embed_in_grid(sub, sup.config)
     return fidelity_statevector(embedded, sup)
+
+
+def fidelity_to_reference(candidate: states.State, reference: states.State) -> float:
+    """Fidelity of any candidate simulation against a single ground-truth reference.
+
+    Handles *both* mismatches at once: a different truncation scheme AND a different (subset)
+    mode grid. The candidate is first embedded onto the reference's wave-vector grid
+    (``embed_in_grid``, aligning modes physically), then compared with the standard
+    ``fidelity_statevector``, which bridges truncation schemes via ``common_basis``.
+
+    Requires ``candidate.config.frequencies`` to be a subset of
+    ``reference.config.frequencies`` (candidates share the reference's base grid; selected
+    candidates keep a subset). The reference is typically ``full+totalcap`` with
+    ``mode_selection=False`` (the full-grid ground truth).
+    """
+    embedded = embed_in_grid(candidate, reference.config)
+    return fidelity_statevector(embedded, reference)
