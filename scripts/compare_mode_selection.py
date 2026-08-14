@@ -24,6 +24,9 @@ Configurable via key=value pairs:
   alpha     coherent amplitude     (default 1.0)
   n         Fock number            (default 1, used when photon=number)
   atom      initial atom state     (default g)
+  w_atom    atom transition freq   (default 1.0)
+  k_photon  photon central k       (default = w_atom, i.e. resonance)
+  sigma     photon k-space width   (default 1.0; alias sigma_photon)
   schemes   comma-separated list   (default truncated,truncated+atom,full+totalcap)
   g         fixed coupling for the heatmap          (default 0.1)
   g_min,g_max,g_points   g-sweep range/points       (default 1e-3, 0.3, 10)
@@ -40,7 +43,6 @@ Examples:
 
 import sys
 import os
-from dataclasses import replace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
@@ -68,6 +70,7 @@ DEFAULT_ATOM_WINDOW = 0.25
 
 
 def build_config(scheme, g, modes, length, N, t, dt, state_type, atom,
+                 k_photon, w_atom, sigma_photon,
                  mode_selection=False, photon_window=DEFAULT_PHOTON_WINDOW,
                  atom_window=DEFAULT_ATOM_WINDOW):
     return Config(
@@ -80,6 +83,9 @@ def build_config(scheme, g, modes, length, N, t, dt, state_type, atom,
         truncation=scheme,
         t=t,
         dt=dt,
+        k_photon=k_photon,
+        w_atom=w_atom,
+        sigma_photon=sigma_photon,
         mode_selection=mode_selection,
         photon_window=photon_window,
         atom_window=atom_window,
@@ -203,6 +209,9 @@ def main(**kwargs):
     alpha = float(kwargs.get("alpha", 1.0))
     n = int(kwargs.get("n", 1))
     atom = kwargs.get("atom", "g")
+    w_atom = float(kwargs.get("w_atom", 1.0))
+    k_photon = float(kwargs.get("k_photon", w_atom))   # defaults to resonance
+    sigma_photon = float(kwargs.get("sigma", kwargs.get("sigma_photon", 1.0)))
     state_type = CoherentState(alpha) if photon_type == "coherent" else NumberState(n)
 
     schemes = [s.strip() for s in kwargs.get(
@@ -224,9 +233,11 @@ def main(**kwargs):
     do_heatmap = do in ("both", "heatmap")
 
     photon_label = f"coherent(a={alpha})" if photon_type == "coherent" else f"number(n={n})"
-    title_suffix = f"(modes={modes}, N={N}, {photon_label}, atom={atom})"
+    title_suffix = (f"(modes={modes}, N={N}, {photon_label}, atom={atom}, "
+                    f"k0={k_photon}, w={w_atom}, sig={sigma_photon})")
 
-    base = dict(modes=modes, length=length, N=N, t=t, dt=dt, state_type=state_type, atom=atom)
+    base = dict(modes=modes, length=length, N=N, t=t, dt=dt, state_type=state_type, atom=atom,
+                k_photon=k_photon, w_atom=w_atom, sigma_photon=sigma_photon)
 
     default_name = f"compare_mode_selection_M{modes}_N{N}"
     out_dir = kwargs.get("out", os.path.join(os.path.dirname(__file__), "..", "results", default_name))
