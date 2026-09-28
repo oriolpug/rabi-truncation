@@ -709,16 +709,17 @@ occurs when resolving the grid, building the basis/Hamiltonian and preparing
 the ket. \code{with_D} returns a copy with a new atomic dictionary.
 An \code{Experiment} copies its physical dictionaries before construction,
 so sweeps do not overwrite the supplied physical configuration.
-A notebook parameter cell can use:
+All imports belong in the first notebook cell. The following example combines
+the imports, parameter, generation and drawing cells for compact presentation:
 \begin{lstlisting}
 import numpy as np
 from dataclasses import replace
 from src.xp_config import ExperimentConfig
 from src.experiment import estimate_config
 from src.fidelities import fidelities_over_time
-from experiment.atom_evolution import (
-    run_atom_evolution, plot_atom_evolution,
-)
+from experiment.atom_evolution import run_atom_evolution
+import matplotlib.pyplot as plt
+from IPython.display import display
 
 config = ExperimentConfig(
     param_photon={'k_0': 1., 'sigma_k': .4, 'x_0': -2.,
@@ -733,27 +734,34 @@ config = ExperimentConfig(
 
 # Estimate every basis that will actually be propagated.
 for scheme in ('full+totalcap', 'truncated'):
-    estimate_config(replace(config, truncation=scheme))
+    display(estimate_config(replace(config, truncation=scheme)))
 runs = run_atom_evolution(config)
 metrics = fidelities_over_time(
     runs['truncated'], runs['full+totalcap'])
-fig = plot_atom_evolution(runs)
+# Plot directly in a notebook cell, after data generation/postprocessing.
+fig, ax = plt.subplots()
+for scheme, experiment in runs.items():
+    ax.plot(experiment.times, experiment.compute_excited_probability(),
+            label=scheme)
+ax.set(xlabel='$t$', ylabel='$P_e$')
+ax.legend(frameon=False)
+plt.show()
 \end{lstlisting}
 For cutoff control, use \code{CTRL_M_EXPLICIT=False} and
 \code{cutoffs={'ir_cutoff': 0., 'uv_cutoff': 2.}} instead.
 At this $L$ the base grid is identical. Direct execution constructs
 \code{Experiment}, calls \code{propagate_state}, then \code{compute_observables};
-the common experiment helper performs those three operations.
+each experiment function performs those three operations explicitly in its own file.
 
 \paragraph{Five experiments and their output contracts.}
 All four migrated Uri notebooks explicitly set \code{coupling='sqrt'}.
 The scattering notebook remains alongside them. Modules do not simulate
-or change the Matplotlib backend on import. Numerical execution and plotting
-are separate functions, with plotting returning figure objects.
+or change the Matplotlib backend on import. Numerical modules generate data only. Each notebook then postprocesses the
+data and draws its figures directly, without project plotting functions.
 \begin{longtable}{p{.34\textwidth}p{.57\textwidth}}
 \toprule Module & Calculation and main return value\\\midrule\endhead
 \code{atom_evolution.py} & Dictionary of propagated \code{Experiment}
-objects by requested basis. Forces history storage; plots $P_e$ and entropy.
+objects by requested basis. Forces history storage; the notebook derives $P_e$ and entropy.
 The notebook additionally calculates the two fidelities.\\
 \code{full_cumulative_fidelity.py} & Dictionary of increasing caps,
 retained final-only runs, and initial/final metrics for adjacent cap-list
@@ -764,8 +772,8 @@ names, comparator name, sample means and initial metrics. Forces history.\\
 and window heatmaps at fixed coupling. Requires history. Comparator is
 always unselected total-cap.\\
 \code{scattering.py} & One experiment with the user's dictionary API;
-optional observable CSV. Plots $1g$ profiles and directional/zero/TLS/norm
-populations.\\
+optional observable CSV. The notebook reconstructs $1g$ profiles and draws
+directional/zero/TLS/norm populations.\\
 \bottomrule
 \end{longtable}
 With $S$ candidate schemes, $Q$ coupling values, $C$ caps, and $P,A$ window
@@ -791,7 +799,7 @@ observable methods promote them internally as needed. Diagnostics with
 time returns one scalar or matrix.
 
 Cap convergence compares equal physical/grid inputs with different caps.
-Its default CLI preparation is coherent, so initial projection differences
+Its notebook chooses a coherent preparation, so initial projection differences
 are expected. The coupling sweep defaults to a propagated total-cap
 comparator; \code{reference} can select another finite basis. This is distinct
 from the ambient full space in equation~\eqref{eq:ambient}. A candidate with
@@ -803,78 +811,70 @@ Their returns contain only the sample means, not separate initial heatmap
 metrics; the sweep arrays do contain the \code{_initial} values. This distinction
 matters when separating selected-preparation and dynamical effects.
 
-\paragraph{Command-line execution, exports and notebook state.}
-The five experiments are invoked through their modules in \code{experiment/}.
-Shared arguments use \code{--option value}; old numerical values still require
-the convention conversions given in the comparative analysis. From the
-repository root:
-\begin{lstlisting}[language={}]
-python -m experiment.scattering --D 0.2 --ctrl-m-explicit --M 5
-python -m experiment.sweep_D_fidelity --D-values 0.02,0.1,0.2 \
-    --out results/sweep.png
-python -m experiment.atom_evolution --D 0.2 --out results/atom.png
+\paragraph{Direct notebook calls, exports and notebook state.}
+The five numerical functions live in \code{experiment/} and are called from
+notebooks using dictionaries or \code{ExperimentConfig}. Each function
+constructs its experiment and calls propagation and observables explicitly:
+\begin{lstlisting}
+experiment = Experiment(config)
+experiment.propagate_state(progress=progress)
+experiment.compute_observables()
 \end{lstlisting}
-The CLI defaults to cutoff control; \code{--M} is active only with
-\code{--ctrl-m-explicit}. Both profiles are available, with default sqrt;
-\code{--RWA} enables RWA. Solver options can be set in the Python time
-dictionary. Notebooks resolve the root whether the kernel starts there or in
+Parameters remain visible in notebook cells. There is no shared execution
+wrapper, argument parser or command-line entry point. Solver settings are
+read from the time dictionary. Old numerical values still require the
+convention conversions given in the comparative analysis.
+Notebooks resolve the root whether the kernel starts there or in
 \code{notebooks/}. Markdown, comments, labels and function docstrings are in
 English. Each function defines the meaning, types and array shapes of its
-inputs and outputs, with formulas for the relevant numerical operations.
+inputs and outputs, with formulas for its numerical operations.
 
-Resource and diagnostic outputs are stored in pandas DataFrames rather than
-line-by-line prints. Numerical estimate keys remain available alongside
-\code{grid_table} and \code{resource_table}; setting \code{print_report=False}
-suppresses automatic display without discarding either table. The notebooks
-keep named DataFrames for reuse or export:
+The first notebook cell contains all imports and visible figure settings.
+Serif fonts with LaTeX labels, thin axes and curves, light grids and a
+blue/purple/orange palette follow the local
+\code{calibration_twophoton_waveguideQED} notebooks. Each workflow is
+explicit: generate data through its associated Python module, postprocess
+arrays or DataFrames, then draw and optionally export figures in notebook cells.
+
+\code{estimate_config} returns one pandas DataFrame with cavity inputs,
+retained mode count, signed physical bounds and effective IR/UV, time settings,
+and vector-memory estimates. \code{resource_estimation} performs these
+calculations directly, without project helper calls. The table is informative:
+there is no feasibility flag, memory threshold or automatic execution gate.
+The user decides whether to run after reviewing it.
 \begin{lstlisting}
-estimate = estimate_config(config, print_report=False)
-grid_table = estimate['grid_table']
-resource_table = estimate['resource_table']
-display(grid_table, resource_table)
+estimate = estimate_config(config)
+display(estimate)
 
 # After propagation:
 observable_history = experiment.observables_dataframe()
 observable_summary = experiment.observables_dataframe(summary=True)
 display(observable_summary)
 \end{lstlisting}
-The history has physical time as its index and raw observables as columns.
-The summary has observable names as rows and \code{initial}/\code{final}
-columns, including a row for time. Final-only storage produces just a
-\code{final} column: its retained state is never presented as an initial
-sample. Neither conversion normalizes populations nor rounds stored values.
-Fidelity DataFrames expose initial, final or sample-mean metrics with explicit
-labels; sweeps use indices naming the scheme, coupling, selection flag or
-compared caps. Window scans use scheme and both window radii as index levels.
-DataFrames support their usual CSV export. The estimator records excluded
-memory costs in \code{resource_table.attrs['memory_excludes']} and the
-heuristic feasibility rule in \code{resource_table.attrs['feasibility_rule']}.
+Observable histories use physical time as the index. Endpoint summaries have
+observable rows and initial/final columns, or a final column only for
+final-only storage. These conversions retain raw probabilities and full
+numerical precision. Fidelity tables label initial, final and sample-mean
+values explicitly. Both estimate and diagnostic DataFrames support ordinary
+CSV export. Excluded memory costs are stated in the estimator docstring and
+resource-estimate notebook cells.
 
-With \code{--out}, a CLI saves a figure and same-stem NPZ with the supplied
-arrays. Its metadata field is \code{configuration_json}.
-JSON stores the base configuration;
-additional sweep choices and derived grids must be read from accompanying
-arrays or reconstructed. Complex values are represented as strings.
-Ordinary exported arrays require no pickle:
+Data and figure exports are controlled directly in notebook cells. For example,
+after constructing a diagnostic DataFrame:
 \begin{lstlisting}
-import json
-with np.load('results/sweep.npz', allow_pickle=False) as data:
-    metadata = json.loads(str(data['configuration_json']))
-    D_values = data['D']
-    F_state_mean = data['F_state']
+# Optional export, chosen in the notebook.
+observable_history.to_csv('observables.csv')
 \end{lstlisting}
-The atom-evolution CLI exports time and excited populations; entropy and
-notebook fidelity curves are not automatically included in that export.
-Cap exports omit Python run objects. Optional scattering CSV writes
+The optional \code{store_results=True} input of \code{run_scattering} writes
 \code{results/scattering.csv}, overwriting a prior requested export, with
-one column per observable and no configuration metadata.
+one column per raw observable and no configuration metadata.
 
 \subsection{Correspondence between controls and resource costs}
 \paragraph{What the grid report establishes.}
-The same \code{resolve_grid} serves propagation and estimation before Fock
-allocation. Base and selected descriptions contain counts, signed extrema,
-radial extrema, zero presence, smallest nonzero momentum and integer indices.
-For integer index set $I$, the report tests
+The estimator directly applies the grid and optional-window formulas before
+Fock allocation and reports retained count, signed extrema and effective
+radial extrema. The separate \code{grid_summary} utility can describe a grid
+more fully. For integer index set $I$, that utility tests
 \begin{equation}
  I=\{j:-j_{\max}\leq j\leq j_{\max},\ |j|\geq j_{\min}\},\quad
  j_{\min}=\min_{j\in I}|j|,\quad j_{\max}=\max_{j\in I}|j|.
@@ -895,8 +895,8 @@ Selected $\{0,1,2\}$ & $\{0,1,2\}$ & No & None\\\bottomrule
 \end{tabular}
 \end{center}
 The first two grids give identical finite dynamics at equal other inputs.
-A positive-IR band has no allowed equivalent explicit count. The report
-states this rather than proposing a count that silently inserts zero.
+A positive-IR band has no allowed equivalent explicit count. The retained count alone therefore does not imply an equivalent explicit
+zero-containing grid.
 
 \paragraph{Vector storage and exact dimension growth.}
 A complex128 ket occupies $16d$ bytes. With $S=\code{store_state}$,
@@ -938,7 +938,8 @@ levels, and the other $M-1$ occupations. At $N=0$ all counts are zero.
 The engine assembles $4A_\B$ directed TLS-flipping triplets without RWA,
 $2A_\B$ with it. Zero coefficients, such as the sqrt zero mode, may still
 occupy recorded triplet slots. Physically nonzero matrix entries can be
-fewer, especially at $D=0$. The estimator uses the simpler bound above.
+fewer, especially at $D=0$. The bound above describes sparse scaling; the informative table estimates
+vector memory only.
 
 A complex CSR matrix with $Z$ stored entries uses approximately
 \begin{equation}
@@ -951,13 +952,11 @@ Temporary row/column/value lists and COO/CSR conversion add assembly peaks. Basi
 photon-number arrays have at least $MB$ occupation entries plus object
 overhead. These costs are excluded from the returned vector estimate.
 
-\code{feasible} is only the heuristic $d\leq100000$ and
-$G_{\mathrm{vectors}}\leq1$ GiB. It is not a memory guarantee, a physical
-accuracy criterion or an automatic engine limit. Notebooks check it before
-allocation. Estimates concern one trajectory: retained objects at several
-caps/schemes add their costs. Cap convergence keeps all its runs, even though
-they are final-only. Sweep peaks include a comparator and candidate together.
-The largest individual estimate is therefore not a total collection estimate.
+The estimate contains no feasibility threshold. It concerns one trajectory:
+retained objects at several caps/schemes add their costs. Cap convergence keeps
+all its runs, even though they are final-only. Sweep peaks include a comparator
+and candidate together. The largest individual estimate is therefore not a
+total collection estimate. Whether to allocate and run is the user's decision.
 
 Implicit fidelity keys examine $O(M_AB_A+M_BB_B)$ occupation entries.
 Sorting each key adds work dependent on its occupied-mode count; matching
@@ -1147,7 +1146,8 @@ Times & \code{linspace(0,T,int(T/dt))} and output renormalization. & Nominal
 \code{dt}, exact final time, raw norms and explicit tolerances. Sample means
 may change even with similar trajectories.\\
 Control & Heterogeneous scripts and inputs. & Callable modules, five notebooks
-and common CLI. Former \code{codex/} migrated and removed.\\
+with direct construction, propagation and observable calls in each experiment.
+Former \code{codex/} migrated and removed.\\
 \bottomrule
 \end{longtable}
 A minimal counterexample to the old cross-type overlap is
@@ -1203,15 +1203,14 @@ protect the distinction between metrics. Photon populations sum to the
 ket norm, and the total Hamiltonian expectation is checked for conservation. Gaussian, vacuum,
 coherent and zero-mode preparations are tested separately from evolution.
 
-Integration tests exercise all five experiment module CLIs, their exports,
-and the callable functions. The five notebooks are checked for valid Python
-cells and the requested grid/coupling conventions. Tabular diagnostics are
-checked against the raw arrays, including final-only labels, absent grid
-equivalences and preservation of norm drift and numerical precision. A documentation rebuild
-does not replace rerunning the suite after numerical code changes. In an installed development environment, use:
-\begin{lstlisting}[language={}]
-python -m pytest tests -q
-\end{lstlisting}
+Workflow validation compares numerical outputs of all five experiment functions
+and checks their notebook calls. Estimate counts and dimensions are compared with the engine's
+resolved grids and occupation spaces. Tabular diagnostics are compared with raw
+arrays, including final-only labels and preservation of norm drift. Source
+checks confirm that imports are in the first notebook cell and drawing code is
+present only in notebooks. A documentation rebuild does not validate numerical
+behavior by itself.
+
 Documentation compiles from its sources and regenerates line comments from
 current files. Derivations added here explain the current model; they do
 not introduce additional solver features.

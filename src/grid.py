@@ -1,4 +1,4 @@
-"""One momentum-grid resolver for evolution and resource estimation."""
+"""Periodic-box momentum grids used by evolution."""
 
 from numbers import Integral
 
@@ -144,7 +144,7 @@ def resolve_grid(config):
     base, selected : tuple[numpy.ndarray, numpy.ndarray]
         Sorted float arrays of shapes (M_base,) and (M_selected,). Selection
         acts after base-grid construction. With selection disabled, selected
-        is a separate copy of base. Both engine and estimator use this routine.
+        is a separate copy of base.
     """
     base = momentum_modes(config.param_atom, config.cutoffs, config.CTRL_M_EXPLICIT, config.M)
     if config.mode_selection:

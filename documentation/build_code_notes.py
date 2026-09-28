@@ -21,7 +21,7 @@ BLOCKS = {
         ('def with_D', r'Return a replaced configuration with a new atomic dictionary. Other inputs are reused; the supplied dictionary is not overwritten during a sweep.')],
     'src/grid.py': [
         ('"""', r'\code{integer} accepts integral types above its minimum, including NumPy integers. It rejects booleans and all floats rather than silently coercing them.'),
-        ('def momentum_modes', r'One grid generator for both evolution and estimation; its inputs describe the base grid, before any optional windows.'),
+        ('def momentum_modes', r'Construct the physical base grid used by evolution, before any optional windows.'),
         ('L = float', r'Convert and require finite $L>0$. Require an actual boolean control so a truthy string cannot silently select the wrong branch.'),
         ('spacing =', r'Compute the physical spacing $\Delta k=2\pi/L$, \eqref{eq:grid}; it is never inferred from a chosen number of modes.'),
         ('if CTRL_M_EXPLICIT:', r'Require positive odd integer $M$ and construct indices $-J,\ldots,J$, $J=(M-1)/2$. Even counts raise an error before basis allocation.'),
@@ -32,7 +32,7 @@ BLOCKS = {
         ('def select_modes', r'Validate positive finite $\sigma_k$ and nonnegative finite factors. This is a requested subset operation; it is not a right-moving preparation filter.'),
         ('centres =', r'Window centres $k_0,+\omega_0,-\omega_0$ with radii $w_p\sigma_k,w_a\sigma_k$, as in \eqref{eq:selection}.'),
         ('mask =', r'For each window use an absolute momentum tolerance, add the nearest mode if empty, and union its mask. Ties use the first sorted entry. The returned mask preserves base-grid ordering.'),
-        ('def resolve_grid', r'Resolve the same base grid for estimator and engine. With selection return its indexed subset; otherwise return a distinct array copy with the same values.'),
+        ('def resolve_grid', r'Resolve the base grid for the engine. With selection return its indexed subset; otherwise return a distinct array copy with the same values.'),
         ('def grid_summary', r'Recover integer indices from the physical spacing and compute radial extrema. This representation report is independent of the photon cap and basis type.'),
         ('expected =', r'Test equality with the entire symmetric radial band, \eqref{eq:radialexact}; minima/maxima alone would miss holes or unpaired endpoints. Compute the smallest nonzero $|k|$ separately.'),
         ('return {"n_modes"', r'Report count, signed extrema, effective cutoffs, zero, integer indices and exact representability. An equivalent explicit $M$ exists only for a radial-exact set containing zero.'),
@@ -83,10 +83,10 @@ BLOCKS = {
     'src/experiment.py': [
         ('"""', r'One common engine imports grid, basis, Hamiltonian and diagnostics. \code{momentum_modes} remains importable from this module for API convenience.'),
         ('def output_times', r'Validate finite positive $T,\code{dt}$. Generate nominal output spacing with a roundoff tolerance, always including zero and exact $T$; if $\code{dt}>T$, return both endpoints.'),
-        ('def resource_estimation', r'Build configuration from the dictionary API and call the same grid resolver as propagation. Optional selection requires packet information; dimension is evaluated without enumerating a basis.'),
+        ('def resource_estimation', r'Compute one informative DataFrame directly from dictionary inputs: cavity, retained mode count, physical bounds, output settings and vector memory. No project helper or feasibility threshold is involved.'),
         ('if truncation ==', r'Use exact dimensions \eqref{eq:dimensions} with the selected count. Reject unknown basis names; no dense allocation is needed to estimate exponential full-space growth.'),
-        ('times = output_times', r'Count outputs and estimate $16d$ bytes per ket, retained history depending on storage, two retained vector copies and the sparse-entry bound, \eqref{eq:memory}.'),
-        ('summary =', r'Return base/selected representations and heuristic feasibility, plus reusable grid/resource DataFrames. Display them through the reporting helper when requested. Excluded memory costs remain in frame attributes; no solver allocation limit is enforced.'),
+        ('T, dt =', r'Count endpoint-inclusive outputs directly from $T$ and $\code{dt}$. Estimate $16d$ bytes per ket and two retained vector copies, depending on history storage; see \eqref{eq:memory}.'),
+        ('rows =', r'Build the single group/parameter/value DataFrame. Retained $M$, signed bounds and effective radial extrema expose the chosen representation. The caller decides whether to display the table and run.'),
         ('def estimate_config', r'Forward all grid, cap, selection and storage inputs from the dataclass to the dictionary estimator without a separate estimate formula.'),
         ('class Experiment', r'Copy physical dictionaries, resolve base/selected grids, generate output times, build basis and projected Hamiltonian, then prepare the ket. Coefficient arrays are absent until propagation.'),
         ('def propagate_state', r'Run \code{sesolve} with BDF/default tolerances, raw output normalization and final-state storage. Build a contiguous vector array; alternating ground/excited slices are views, shape $(N_t,B)$ or $(B,)$ for final-only.'),
@@ -97,31 +97,16 @@ BLOCKS = {
         ('def _vectors_for', r'Resolve diagnostic requests: all retained states for None, final for $-1$, or nearest stored output for an in-range time. No interpolation occurs; final-only runs reject earlier requests.'),
         ('def compute_atom_density_matrix', r'Reduce each requested raw ket. None returns a list, an explicit time one matrix; final-only with None returns a one-element list.'),
         ('def compute_excited_probability', r'Return the real excited diagonal of the raw TLS reduction. None returns an array, an explicit time a scalar; norm drift remains visible.'),
-        ('def compute_entropy', r'Normalize the atomic reduction by the full squared ket norm before natural-log von Neumann entropy. This is \eqref{eq:entropy}, bounded by $\log2$ for normalized valid states.'),
         ('def compute_energy(self', r'Apply the same sparse $H_0+DV$ and take the real raw expectation. Return a time array or scalar without introducing a second energy-origin convention.'),
     ],
 }
 
 FUNCTION_NOTES = {
-    'resource_tables': r'Create grid and resource DataFrames from the numerical estimate. Preserve requested controls, effective cutoffs and exact equivalent counts; nullable integer counts distinguish unavailable equivalence. Frame attributes retain integer indices and memory exclusions.',
-    'display_resource_tables': r'Display HTML-capable DataFrames in an active IPython shell, otherwise terminal tables. The input frames remain reusable and unmodified.',
-    'observables_table': r'Convert raw diagnostics to a time-indexed history or observable-by-endpoint frame. Initial/final columns require initial availability; final-only storage produces one final column. Numerical precision and norm drift are preserved.',
-    'run': r'Construct one \code{Experiment}, propagate, then compute observables in that order. Return the numerical object so notebook analyses can reuse its kets and Hamiltonian.',
-    'save_arrays': r'Create the output directory and write NPZ arrays plus \code{configuration_json} from the base dataclass. Non-JSON values stringify; ordinary numerical arrays can be loaded without pickle.',
-    'parser': r'Shared CLI names use $D,L,M,k_0,\sigma_k,x_0,N,T$. Default profile is sqrt. Explicit $M$ requires its boolean flag; default CLI grid control uses cutoffs.',
-    'config_from_args': r'Construct the three dictionaries and dataclass with the current conventions. Both count and cutoff inputs may be stored, but only the selected control is active; historical values are not automatically converted.',
-    'finish': r'With an output path, save the figure and same-stem NPZ, then close it. Otherwise display the figure. Backend selection remains the environment or notebook responsibility.',
-    'run_scattering': r'Preserve the user dictionary API and append grid-control inputs. Run shared dynamics; optional CSV contains observable columns only and overwrites its fixed repository results path.',
-    'plot_scattering': r'Plot initial/middle/final $1g$ Fourier densities and directional/zero/TLS/norm populations. The interaction marker is $-x_{\mathrm{tls}}$, derived in \eqref{eq:position}.',
-    'run_atom_evolution': r'Replace the configuration by each scheme and force history storage. Return a dictionary of experiments, so excitation, entropy and notebook fidelity derive from the same stored trajectories.',
-    'plot_atom_evolution': r'Plot raw $P_e$ and normalized TLS entropy against output times for every returned scheme. This plot does not itself propagate or compute cross-state fidelity.',
+    'run_scattering': r'Assemble ExperimentConfig from named dictionary inputs; construct \code{Experiment}, call \code{propagate_state} and \code{compute_observables} directly. Return the propagated object. Optional CSV stores raw observable columns at its fixed repository results path.',
+    'run_atom_evolution': r'For each scheme, replace the configuration and force history storage, construct Experiment, propagate and compute observables explicitly. Return the experiments for notebook excitation, entropy and fidelity analyses.',
     'run_cap_convergence': r'Require at least two strictly increasing caps; run total-cap final-only trajectories at each. Compare adjacent list entries initially and finally using physical embedding; retain all run objects.',
-    'plot_cap_convergence': r'Two metric panels distinguish initial and final fidelities. The horizontal value is the lower cap in each adjacent pair, not necessarily a comparison of $N$ with $N+1$.',
     'run_coupling_sweep': r'Validate a finite nonempty one-dimensional $D$ array and force histories. At each $D$, propagate the chosen comparator and each candidate, reusing it for an identical scheme. Return $(S,Q)$ sample means and initial metrics, \eqref{eq:mean}.',
-    'plot_coupling_sweep': r'Plot sample means versus physical $D$ and dashed initial values, separately for both metrics. The unsuffixed result is neither final fidelity nor a time-integral quadrature.',
     'run_mode_selection': r'Use an unselected total-cap comparator at each coupling. Sweep schemes and both selection flags; return $(S,2,Q)$ means/initial metrics. At one fixed $D$, scan windows to return $(S,P,A)$ mean-only heatmaps.',
-    'plot_mode_selection': r'Plot selection on/off sweeps and window maps for both metrics. Transpose the stored $(P,A)$ slice for plotting so the horizontal axis remains photon window and vertical axis atom window.',
-    'main': r'Parse current CLI inputs, report relevant estimates before simulation, call the module numerical routine, then plot/export. The main guard preserves importability from notebooks.',
 }
 
 
@@ -167,7 +152,7 @@ def generate():
             last = matches[index + 1][0] - 1 if index + 1 < len(matches) else len(lines)
             sections.append(f'{first}--{last} & {comment}' + r'\\' + '\n')
         sections.append(r'\bottomrule\end{longtable}' + '\n')
-    for path in [ROOT / 'src' / 'reporting.py', *sorted((ROOT / 'experiment').glob('*.py'))]:
+    for path in sorted((ROOT / 'experiment').glob('*.py')):
         if path.name == '__init__.py':
             continue
         filename = path.relative_to(ROOT).as_posix()

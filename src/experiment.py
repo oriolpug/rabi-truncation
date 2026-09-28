@@ -1,14 +1,15 @@
 """Pure-state dynamics and diagnostics shared by every experiment."""
 
 from math import comb
+from numbers import Integral
 
 import numpy as np
+import pandas as pd
 import qutip
 
 from .fidelities import atom_density_matrix
-from .grid import grid_summary, integer, momentum_modes, resolve_grid
+from .grid import momentum_modes, resolve_grid
 from .hamiltonians import Hamiltonian
-from .reporting import display_resource_tables, observables_table, resource_tables
 from .states import FockBasis, initial_state
 from .xp_config import ExperimentConfig
 
@@ -46,108 +47,115 @@ def output_times(param_time_evol):
 def resource_estimation(param_atom, param_time_evol, cutoffs=None,
                         n_max=3, truncation="full+totalcap", store_state=True,
                         CTRL_M_EXPLICIT=False, M=None, param_photon=None,
-                        mode_selection=False, photon_window=1.5, atom_window=0.25,
-                        print_report=True):
-    """Estimate basis dimensions and retained-vector memory before allocation.
+                        mode_selection=False, photon_window=1.5, atom_window=0.25):
+    """Return one informative table of cavity, grid, time and vector-memory inputs.
 
     Parameters
     ----------
     param_atom : dict[str, object]
-        Contains L (positive float); omega_0 is also used for selected windows.
-    param_time_evol : dict[str, float]
-        T and dt determine the N_t requested outputs.
-    cutoffs : dict[str, float] or None, optional
-        ir_cutoff/uv_cutoff radial bounds when explicit-M control is disabled.
-    n_max : int, optional
-        Nonnegative photon cap N, default 3.
-    truncation : {'full+totalcap', 'truncated', 'full'}, optional
-        Joint dimensions d=2*binomial(M+N,N), 2*(1+M*N), or 2*(N+1)**M.
-    store_state : bool, optional
-        True estimates N_t retained kets; False estimates one final ket.
-    CTRL_M_EXPLICIT : bool, optional
-        True chooses an odd positive M; False uses the cutoff band.
-    M : int or None, optional
-        Explicit base-grid mode count; ignored under cutoff control.
-    param_photon : dict[str, object] or None, optional
-        k_0 and sigma_k are required only when mode_selection is enabled.
-    mode_selection : bool, optional
-        Apply packet/resonance windows before computing the dimension.
-    photon_window, atom_window : float, optional
-        Window radii as multiples of sigma_k, default 1.5 and 0.25.
-    print_report : bool, optional
-        Display resource DataFrames in IPython or terminal tables. False
-        suppresses display but still returns the frames and numerical values.
+        Cavity/TLS inputs: L, omega_0, D, x_tls, coupling and initial_state.
+    param_time_evol : dict[str, object]
+        Positive T and dt, plus optional solver method and tolerances.
+    cutoffs : dict[str, float] or None
+        Radial ir_cutoff/uv_cutoff bounds under cutoff control.
+    n_max : int
+        Nonnegative photon cap N.
+    truncation : str
+        'truncated', 'full+totalcap' or 'full'.
+    store_state : bool
+        Estimate the complete history when True, otherwise one final ket.
+    CTRL_M_EXPLICIT : bool
+        True uses an odd positive M; False derives M from the radial bounds.
+    M : int or None
+        Explicit base-grid count, ignored under cutoff control.
+    param_photon : dict[str, object] or None
+        k_0 and sigma_k, needed only for optional mode selection.
+    mode_selection : bool
+        Apply packet/resonance windows before counting retained modes.
+    photon_window, atom_window : float
+        Selection radii in units of sigma_k.
 
     Returns
     -------
-    dict[str, object]
-        Mode count, d, N_t, memory estimates in GiB, sparse-entry upper bound,
-        heuristic feasible flag, grid descriptions, and pandas DataFrames
-        ``grid_table``/``resource_table``. Existing scalar/dictionary keys remain
-        available. Grid reports show effective IR/UV and equivalent explicit M.
-
-    Notes
-    -----
-    One complex128 ket costs 16*d bytes. history_gib counts retained solver
-    kets; retained_vectors_gib approximates twice that for copied coefficients.
-    The upper bound nnz <= d*(1+2*M) includes the diagonal. Feasibility means
-    d<=100000 and retained_vectors_gib<=1; it is a heuristic, not a guarantee.
-    Sparse matrices, basis/Python objects, solver workspace and plots are
-    excluded (also recorded in resource_table.attrs). No basis is enumerated.
+    pandas.DataFrame
+        One value column indexed by group and parameter. Memory is in GiB:
+        one complex128 ket costs 16*d bytes; retained vectors approximate
+        twice the stored ket history. Sparse matrices, Python objects,
+        solver workspace and figures are excluded. This estimate defines
+        no feasibility threshold and never authorizes or blocks a simulation.
     """
-    config = ExperimentConfig(param_photon or {}, param_atom, param_time_evol, cutoffs,
-                              n_max, truncation, store_state=store_state,
-                              CTRL_M_EXPLICIT=CTRL_M_EXPLICIT, M=M,
-                              mode_selection=mode_selection, photon_window=photon_window,
-                              atom_window=atom_window)
-    base, selected = resolve_grid(config)
-    modes, cap = len(selected), integer(n_max, "n_max")
+    L = float(param_atom["L"])
+    spacing = 2 * np.pi / L
+    if CTRL_M_EXPLICIT:
+        if isinstance(M, bool) or not isinstance(M, Integral) or M <= 0 or M % 2 == 0:
+            raise ValueError("M must be a positive odd integer")
+        k = spacing * np.arange(-(M // 2), M // 2 + 1)
+    else:
+        ir, uv = cutoffs["ir_cutoff"], cutoffs["uv_cutoff"]
+        lower = max(1, int(np.ceil(ir / spacing - 1e-12)))
+        upper = int(np.floor(uv / spacing + 1e-12))
+        positive = spacing * np.arange(lower, upper + 1)
+        k = np.concatenate((-positive[::-1], [0.] if ir == 0 else [], positive))
+    if mode_selection:
+        sigma = param_photon["sigma_k"]
+        mask = np.zeros(len(k), dtype=bool)
+        for centre, radius in ((param_photon["k_0"], photon_window * sigma),
+                               (param_atom["omega_0"], atom_window * sigma),
+                               (-param_atom["omega_0"], atom_window * sigma)):
+            window = abs(k - centre) <= radius + 1e-12
+            if not window.any():
+                window[np.argmin(abs(k - centre))] = True
+            mask |= window
+        k = k[mask]
+    modes = len(k)
     if truncation == "full+totalcap":
-        dimension = 2 * comb(modes + cap, cap)
+        dimension = 2 * comb(modes + n_max, n_max)
     elif truncation == "truncated":
-        dimension = 2 * (1 + modes * cap)
+        dimension = 2 * (1 + modes * n_max)
     elif truncation == "full":
-        dimension = 2 * (cap + 1) ** modes
+        dimension = 2 * (n_max + 1) ** modes
     else:
         raise ValueError(f"Unknown truncation: {truncation}")
-    times = output_times(param_time_evol)
-    ket_gib = dimension * 16 / 2**30
-    history_gib = ket_gib * (len(times) if store_state else 1)
-    retained_gib = 2 * history_gib
-    nnz_bound = dimension * (1 + 2 * modes)
-    summary = grid_summary(base, selected, param_atom["L"])
-    feasible = dimension <= 100_000 and retained_gib <= 1.0
-    estimate = {"n_modes": modes, "dimension": dimension, "n_times": len(times),
-                "ket_gib": ket_gib, "history_gib": history_gib,
-                "retained_vectors_gib": retained_gib, "hamiltonian_nnz_bound": nnz_bound,
-                "feasible": feasible, "grid": summary}
-    estimate.update(resource_tables(estimate, config))
-    if print_report:
-        display_resource_tables(estimate)
-    return estimate
+    T, dt = param_time_evol["T"], param_time_evol["dt"]
+    count = int(np.floor(T / dt + 1e-12))
+    n_times = max(2, count + 1 + int(count * dt < T and
+                  not np.isclose(count * dt, T, atol=1e-12, rtol=0)))
+    ket_gib = 16 * dimension / 2**30
+    history_gib = ket_gib * (n_times if store_state else 1)
+    rows = [("Cavity", name, value) for name, value in param_atom.items()]
+    rows += [("Modes", "M", modes), ("Modes", "delta_k", spacing),
+             ("Modes", "k_min", float(k.min())), ("Modes", "k_max", float(k.max())),
+             ("Modes", "IR_effective", float(abs(k).min())),
+             ("Modes", "UV_effective", float(abs(k).max()))]
+    rows += [("Time", name, value) for name, value in param_time_evol.items()]
+    rows += [("Time", "n_outputs", n_times),
+             ("Memory", "basis", truncation), ("Memory", "n_max", n_max),
+             ("Memory", "dimension", dimension), ("Memory", "store_state", store_state),
+             ("Memory", "ket_GiB", ket_gib), ("Memory", "history_GiB", history_gib),
+             ("Memory", "retained_vectors_GiB", 2 * history_gib)]
+    return pd.DataFrame(rows, columns=["Group", "Parameter", "Value"]).set_index(
+        ["Group", "Parameter"])
 
 
-def estimate_config(config, print_report=True):
-    """Estimate resources using the exact inputs of a shared configuration.
+def estimate_config(config):
+    """Return the informative resource table for an ExperimentConfig input.
 
     Parameters
     ----------
     config : ExperimentConfig
-        Grid, selection, photon cap, basis, output times and storage policy.
-    print_report : bool, optional
-        Display tabular estimates when True; False returns them silently.
+        Physical, grid, photon-cap, output-time and storage inputs.
 
     Returns
     -------
-    dict[str, object]
-        resource_estimation output, including numerical entries and reusable
-        ``grid_table``/``resource_table`` pandas DataFrames. No propagation occurs.
+    pandas.DataFrame
+        Cavity parameters, retained mode count and physical bounds, time
+        settings and estimated vector memory. Display it in the notebook;
+        the decision to run remains with the user.
     """
     return resource_estimation(config.param_atom, config.param_time_evol, config.cutoffs,
                                config.n_max, config.truncation, config.store_state,
                                config.CTRL_M_EXPLICIT, config.M, config.param_photon,
-                               config.mode_selection, config.photon_window, config.atom_window,
-                               print_report)
+                               config.mode_selection, config.photon_window, config.atom_window)
 
 
 class Experiment:
@@ -192,6 +200,9 @@ class Experiment:
             sparse matrices and initial ket immediately, but does not propagate.
             Call estimate_config first when allocation may be large.
         """
+
+        print("Initializing experiment...")
+
         self.config = config
         self.param_photon, self.param_atom = dict(config.param_photon), dict(config.param_atom)
         self.param_time_evol = dict(config.param_time_evol)
@@ -206,6 +217,8 @@ class Experiment:
         self.H = self.hamiltonian.build_hamiltonian()
         self.state0 = initial_state(self.basis, self.k_tab, self.param_photon, self.param_atom)
         self.c_g_array = self.c_e_array = self.observables = None
+
+        print("Done.")
 
     def propagate_state(self, progress=False):
         """Solve i*d|psi>/dt=H|psi> and retain raw field/TLS amplitudes.
@@ -229,15 +242,23 @@ class Experiment:
         The final ket is always stored. c_g/c_e are alternating views of a copied
         joint coefficient array, in addition to QuTiP's retained state objects.
         """
+
+        print("Starting propagation...")
+
         self.result = qutip.sesolve(self.H, self.state0, self.times, options={
             "method": self.param_time_evol.get("method", "bdf"),
-            "store_states": self.store_state, "store_final_state": True,
-            "normalize_output": False, "rtol": self.param_time_evol.get("rtol", 1e-9),
+            "store_states": self.store_state, 
+            "store_final_state": True,
+            "normalize_output": False, 
+            "rtol": self.param_time_evol.get("rtol", 1e-9),
             "atol": self.param_time_evol.get("atol", 1e-11),
             "progress_bar": "tqdm" if progress else False})
         vectors = np.array([s.full()[:, 0] for s in self.result.states]) if self.store_state \
             else self.result.final_state.full()[:, 0]
         self.c_g_array, self.c_e_array = vectors[..., 0::2], vectors[..., 1::2]
+
+        print("Done.")
+
         return self.c_g_array, self.c_e_array
 
     def _one_photon_indices(self):
@@ -283,6 +304,9 @@ class Experiment:
         equals norm, not necessarily exactly one. Directional populations are
         raw channel occupations, not automatically asymptotic scattering ratios.
         """
+
+        print("Computing observables ...")
+
         if self.c_g_array is None:
             raise RuntimeError("Call propagate_state first")
         ground, excited = np.atleast_2d(self.c_g_array), np.atleast_2d(self.c_e_array)
@@ -292,11 +316,14 @@ class Experiment:
                             "norm": probability.sum(axis=1),
                             "p_excited": (np.abs(excited) ** 2).sum(axis=1)}
         for name, mask in (("p_transmitted", self.k_tab[modes] > 0),
-                           ("p_reflected", self.k_tab[modes] < 0),
-                           ("p_zero_1g", self.k_tab[modes] == 0)):
+                           ("p_reflected", self.k_tab[modes] < 0)):
             self.observables[name] = (np.abs(ground[:, indices[mask]]) ** 2).sum(axis=1)
+            
         for n in range(int(self.photon_numbers.max()) + 1):
             self.observables[f"p_{n}_photon"] = probability[:, self.photon_numbers == n].sum(axis=1)
+
+        print("Done.")
+        
         return self.observables
 
     def observables_dataframe(self, summary=False):
@@ -322,7 +349,16 @@ class Experiment:
         """
         if self.observables is None:
             self.compute_observables()
-        return observables_table(self.observables, summary, self.store_state)
+        frame = pd.DataFrame(self.observables)
+        if not summary:
+            return frame.set_index("time")
+        if self.store_state:
+            frame = frame.iloc[[0, -1]].T
+            frame.columns = ["initial", "final"]
+        else:
+            frame = frame.iloc[[-1]].T
+            frame.columns = ["final"]
+        return frame.rename_axis("observable")
 
     def one_photon_wavefunction(self, i, x_tab):
         """Reconstruct the one-photon, ground-TLS component on a spatial grid.
@@ -418,26 +454,6 @@ class Experiment:
         values = np.array([atom_density_matrix(v)[1, 1].real for v in self._vectors_for(t)])
         return values if t is None else float(values[0])
 
-    def compute_entropy(self, t=None):
-        """Evaluate the normalized TLS von Neumann entropy in natural logarithms.
-
-        Parameters
-        ----------
-        t : float or None, optional
-            Time selector: None for all retained outputs, -1 for final, or nearest
-            stored output to an in-range time; follows _vectors_for.
-
-        Returns
-        -------
-        numpy.ndarray or float
-            Real array (K,) for None or scalar otherwise. With
-            rho_hat=Tr_field(|psi><psi|)/||psi||**2, S=-Tr(rho_hat*log(rho_hat))
-            lies in [0,log(2)]. For the pure joint state this is field/TLS
-            entanglement entropy. Normalization here removes solver norm drift.
-        """
-        values = np.array([qutip.entropy_vn(qutip.Qobj(atom_density_matrix(v) / np.vdot(v, v).real))
-                           for v in self._vectors_for(t)])
-        return values if t is None else float(values[0])
 
     def compute_energy(self, t=None):
         """Evaluate the raw expectation of the same total Hamiltonian used for dynamics.

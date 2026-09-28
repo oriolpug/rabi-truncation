@@ -5,7 +5,7 @@ from dataclasses import replace
 import numpy as np
 
 from src.fidelities import fidelities_over_time
-from ._common import config_from_args, finish, parser, run
+from src.experiment import Experiment
 
 
 def run_coupling_sweep(config, D_values, schemes=('truncated',), reference='full+totalcap', progress=False):
@@ -44,70 +44,20 @@ def run_coupling_sweep(config, D_values, schemes=('truncated',), reference='full
               ('F_state', 'F_atom', 'F_state_initial', 'F_atom_initial')}}
     for i, D in enumerate(D_values):
         at_D = replace(config.with_D(float(D)), store_state=True)
-        ref = run(replace(at_D, truncation=reference), progress)
+        reference_config = replace(at_D, truncation=reference)
+        ref = Experiment(reference_config)
+        ref.propagate_state(progress=progress)
+        ref.compute_observables()
         for j, scheme in enumerate(schemes):
-            candidate = ref if scheme == reference else run(replace(at_D, truncation=scheme), progress)
+            if scheme == reference:
+                candidate = ref
+            else:
+                candidate_config = replace(at_D, truncation=scheme)
+                candidate = Experiment(candidate_config)
+                candidate.propagate_state(progress=progress)
+                candidate.compute_observables()
             fidelities = fidelities_over_time(candidate, ref)
             for name, values in fidelities.items():
                 out[name][j, i] = np.mean(values)
                 out[f'{name}_initial'][j, i] = values[0]
     return out
-
-
-def plot_coupling_sweep(results):
-    """Plot sample-mean and initial squared fidelities versus physical D.
-
-    Parameters
-    ----------
-    results : dict[str, object]
-        run_coupling_sweep output with D (Q,) and metrics (S,Q).
-
-    Returns
-    -------
-    matplotlib.figure.Figure
-        Two metric panels; one solid mean curve per scheme and dashed initial
-        curves. The figure is returned without display or export.
-    """
-    import matplotlib.pyplot as plt
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-    for ax, name in zip(axes, ('F_state', 'F_atom')):
-        for j, scheme in enumerate(results['schemes']):
-            ax.plot(results['D'], results[name][j], 'o-', label=scheme)
-            ax.plot(results['D'], results[f'{name}_initial'][j], '--', alpha=0.5)
-        ax.set(xlabel='D', ylabel=f'time mean {name}', ylim=(0, 1.05))
-        ax.legend()
-    fig.tight_layout()
-    return fig
-
-
-def main(argv=None):
-    """Run the physical-D sweep and export sample-mean/initial metrics.
-
-    Parameters
-    ----------
-    argv : list[str] or None, optional
-        CLI arguments without the program name. None reads sys.argv[1:].
-
-    Returns
-    -------
-    None
-        Parses parameters, displays resource tables, simulates and plots.
-        --out saves the figure plus a same-stem NPZ; otherwise displays it.
-        Argument parsing may raise SystemExit for --help or invalid input.
-    """
-    p = parser(__doc__)
-    p.add_argument('--D-values', default='0.02,0.1,0.2')
-    p.add_argument('--schemes', default='truncated')
-    p.add_argument('--reference', choices=('full', 'full+totalcap', 'truncated'), default='full+totalcap')
-    args = p.parse_args(argv)
-    config = config_from_args(args)
-    from src.experiment import estimate_config
-    for scheme in set(args.schemes.split(',')) | {args.reference}:
-        estimate_config(replace(config, truncation=scheme))
-    results = run_coupling_sweep(config, [float(v) for v in args.D_values.split(',')],
-                                 args.schemes.split(','), args.reference, args.progress)
-    finish(plot_coupling_sweep(results), args, config, **results)
-
-
-if __name__ == '__main__':
-    main()

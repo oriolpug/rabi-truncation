@@ -5,7 +5,7 @@ from dataclasses import replace
 import numpy as np
 
 from src.fidelities import compare_states
-from ._common import config_from_args, finish, parser, run
+from src.experiment import Experiment
 
 
 def run_cap_convergence(config, caps=(1, 2, 3, 4), progress=False):
@@ -35,8 +35,13 @@ def run_cap_convergence(config, caps=(1, 2, 3, 4), progress=False):
     caps = list(caps)
     if len(caps) < 2 or any(b <= a for a, b in zip(caps, caps[1:])):
         raise ValueError('At least two strictly increasing caps are required')
-    runs = [run(replace(config, n_max=cap, truncation='full+totalcap', store_state=False), progress)
-            for cap in caps]
+    runs = []
+    for cap in caps:
+        current_config = replace(config, n_max=cap, truncation='full+totalcap', store_state=False)
+        experiment = Experiment(current_config)
+        experiment.propagate_state(progress=progress)
+        experiment.compute_observables()
+        runs.append(experiment)
     final, initial = [], []
     for a, b in zip(runs, runs[1:]):
         final.append(compare_states(a.result.final_state, a.basis, a.k_tab,
@@ -46,61 +51,3 @@ def run_cap_convergence(config, caps=(1, 2, 3, 4), progress=False):
             **{name: np.array([row[name] for row in final]) for name in ('F_state', 'F_atom')},
             **{f'{name}_initial': np.array([row[name] for row in initial])
                for name in ('F_state', 'F_atom')}}
-
-
-def plot_cap_convergence(results):
-    """Plot initial and final squared fidelities between adjacent requested caps.
-
-    Parameters
-    ----------
-    results : dict[str, object]
-        run_cap_convergence output; caps (C,), metric arrays (C-1,).
-
-    Returns
-    -------
-    matplotlib.figure.Figure
-        F_state and F_atom panels against the lower cap N_j of each compared
-        pair. Solid curves are final metrics; dashed curves are initial ones.
-        Consecutive requested caps need not differ by exactly one.
-    """
-    import matplotlib.pyplot as plt
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-    for ax, name in zip(axes, ('F_state', 'F_atom')):
-        ax.plot(results['caps'][:-1], results[name], 'o-', label='final')
-        ax.plot(results['caps'][:-1], results[f'{name}_initial'], 'o--', label='initial')
-        ax.set(xlabel='lower cap of compared pair', ylabel=name, ylim=(0, 1.05))
-        ax.legend()
-    fig.tight_layout()
-    return fig
-
-
-def main(argv=None):
-    """Run total-cap convergence and export initial/final fidelities.
-
-    Parameters
-    ----------
-    argv : list[str] or None, optional
-        CLI arguments without the program name. None reads sys.argv[1:].
-
-    Returns
-    -------
-    None
-        Parses parameters, displays resource tables, simulates and plots.
-        --out saves the figure plus a same-stem NPZ; otherwise displays it.
-        Argument parsing may raise SystemExit for --help or invalid input.
-    """
-    p = parser(__doc__)
-    p.set_defaults(photon_state='coherent')
-    p.add_argument('--caps', default='1,2,3,4')
-    args = p.parse_args(argv)
-    config = config_from_args(args)
-    caps = [int(value) for value in args.caps.split(',')]
-    from src.experiment import estimate_config
-    estimate_config(replace(config, n_max=max(caps), truncation='full+totalcap', store_state=False))
-    results = run_cap_convergence(config, caps, args.progress)
-    finish(plot_cap_convergence(results), args, config,
-           **{key: value for key, value in results.items() if key != 'runs'})
-
-
-if __name__ == '__main__':
-    main()

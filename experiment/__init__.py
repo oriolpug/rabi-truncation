@@ -1,1 +1,1 @@
-"""Callable experiments for notebooks and command-line entry points."""
+"""Numerical experiments called directly from notebooks."""

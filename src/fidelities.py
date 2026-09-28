@@ -1,7 +1,9 @@
 """Exact squared state/TLS fidelities in an implicit common full basis."""
 
 import numpy as np
+import pandas as pd
 import qutip
+from tqdm.notebook import tqdm
 
 
 def _vector(ket, basis):
@@ -148,7 +150,39 @@ def compare_states(ket_a, basis_a, k_a, ket_b, basis_b, k_b):
             "F_atom": float(np.clip(qutip.fidelity(rho_a, rho_b) ** 2, 0, 1))}
 
 
-def fidelities_over_time(experiment_a, experiment_b):
+def fidelities(candidate, experiment):
+    """Compare the initial and final states of two propagated simulations.
+
+    Parameters
+    ----------
+    candidate, experiment : Experiment
+        Propagated simulations with the same box length and final time.
+        Bases, mode subsets, photon caps and output spacings may differ.
+        Uses state0 and result.final_state; stored histories are unnecessary.
+        Both simulations must use the same physical mode and TLS conventions.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Rows ``F_state`` and ``F_atom``; columns ``initial`` and ``final``.
+        F_state = |<I_a psi_a | I_b psi_b>|**2 in the common full basis;
+        F_atom = (Tr sqrt(sqrt(rho_a)*rho_b*sqrt(rho_a)))**2, with
+        rho_a/b the field traces of the individually normalized joint kets.
+        Delegates both comparisons to compare_states without changing states.
+    """
+    if not np.isclose(candidate.param_atom["L"], experiment.param_atom["L"],
+                      atol=1e-12, rtol=0):
+        raise ValueError("Experiments must use the same box length for physical-mode embedding")
+    if not np.isclose(candidate.times[-1], experiment.times[-1], atol=1e-12, rtol=0):
+        raise ValueError("Experiments must use the same final time")
+    initial = compare_states(candidate.state0, candidate.basis, candidate.k_tab,
+                             experiment.state0, experiment.basis, experiment.k_tab)
+    final = compare_states(candidate.result.final_state, candidate.basis, candidate.k_tab,
+                           experiment.result.final_state, experiment.basis, experiment.k_tab)
+    return pd.DataFrame({"initial": initial, "final": final})
+
+
+def fidelities_over_time(experiment_a, experiment_b, progress = False):
     """Compare synchronized stored trajectories using the implicit full embedding.
 
     Parameters
@@ -169,6 +203,9 @@ def fidelities_over_time(experiment_a, experiment_b):
     ValueError
         Either history is absent, times differ, or box lengths are incompatible.
     """
+
+    print("Computing fidelity over time ...")
+
     if not experiment_a.store_state or not experiment_b.store_state:
         raise ValueError("Both experiments must store states for a time series")
     if not np.array_equal(experiment_a.times, experiment_b.times):
@@ -177,7 +214,17 @@ def fidelities_over_time(experiment_a, experiment_b):
                       atol=1e-12, rtol=0):
         raise ValueError("Experiments must use the same box length for physical-mode embedding")
     pairs = zip(experiment_a.result.states, experiment_b.result.states)
-    values = [compare_states(a, experiment_a.basis, experiment_a.k_tab,
-                             b, experiment_b.basis, experiment_b.k_tab) for a, b in pairs]
+
+    values = []
+    
+    for a, b in tqdm(
+        pairs,
+        total=len(experiment_a.result.states),
+        disable=not progress):
+        values.append(compare_states(a, experiment_a.basis, experiment_a.k_tab,
+                                     b, experiment_b.basis, experiment_b.k_tab,))
+        
+    print("Done.")
+
     return {name: np.array([value[name] for value in values])
             for name in ("F_state", "F_atom")}

@@ -17,13 +17,13 @@ with `coupling='sqrt'` giving `f_m=sqrt(abs(k_m))`, or `coupling='flat'` giving 
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[dev,notebooks]'
-python -m pytest tests -q
 ```
 
-Open a notebook in `notebooks/` using this Python environment. Its parameter cell defines the physical model; the next cell stores and displays grid and memory estimates as pandas DataFrames before running. Diagnostics and fidelity summaries are also stored as DataFrames, with English labels throughout.
+Open a notebook in `notebooks/` using this Python environment. Its parameter cell defines the physical model; the next cell displays one informative DataFrame with cavity parameters, mode count and physical bounds, time settings and vector-memory estimates. It never stops a simulation based on a memory threshold. Numerical data generation, postprocessing and plotting have separate cells; every plot is drawn directly in the notebook, and every import is in its first cell. Comments, labels and docstrings are in English.
 
 ```python
 import numpy as np
+from IPython.display import display
 from experiment.scattering import run_scattering
 from src.experiment import resource_estimation
 
@@ -37,26 +37,25 @@ M = 5
 
 estimate = resource_estimation(param_atom, param_time_evol, cutoffs,
                                n_max=2, CTRL_M_EXPLICIT=CTRL_M_EXPLICIT, M=M)
+display(estimate)
 experiment = run_scattering(param_photon, param_atom, param_time_evol, cutoffs,
                             n_max=2, CTRL_M_EXPLICIT=CTRL_M_EXPLICIT, M=M)
 
 # Reuse or export tables without parsing console output.
-grid_table = estimate['grid_table']
-resource_table = estimate['resource_table']
 observable_history = experiment.observables_dataframe()
 observable_summary = experiment.observables_dataframe(summary=True)
-# In a notebook: display(grid_table, resource_table, observable_summary)
+# In a notebook: display(estimate, observable_summary)
 # Save if needed: observable_history.to_csv('observables.csv')
 ```
 
-Use `print_report=False` in `resource_estimation` or `estimate_config` to suppress automatic table display. Both DataFrames are still returned alongside the existing numerical estimate keys. A final-only run has a single `final` summary column. Tables retain full numerical precision; `resource_table.attrs['memory_excludes']` documents the costs excluded from the estimate.
+`estimate_config(config)` and `resource_estimation(...)` return the single estimate DataFrame; the notebook displays it explicitly. Memory covers complex vectors only, including the copied coefficient history; sparse matrices, Python objects, solver workspace and figures are excluded. A final-only observable summary has a single `final` column. No feasibility flag or execution gate is applied.
 
 ## Momentum control and bases
 
 - `CTRL_M_EXPLICIT=True`: choose `L` and an odd positive `M`. The grid has exactly `M` points, is symmetric, and includes zero. An even `M` raises `ValueError`.
 - `CTRL_M_EXPLICIT=False`: choose `L` and `ir_cutoff <= abs(k) <= uv_cutoff`. The count follows from the cutoffs. Zero is included when `ir_cutoff=0`; a positive IR cutoff excludes it by the band definition.
 
-Both controls use `delta_k=2*pi/L`. The estimator reports effective cutoffs, actual mode counts, zero-mode presence, and whether the other control can reproduce the same grid. Optional mode selection is an additional restriction; it can produce holes or asymmetric subsets.
+Both controls use `delta_k=2*pi/L`. The estimator reports effective cutoffs, actual mode counts, zero-mode presence, so either control exposes its resulting physical representation. Optional mode selection is an additional restriction; it can produce holes or asymmetric subsets.
 
 | Photon basis | Constraint | Ket dimension |
 |---|---|---|
@@ -70,13 +69,17 @@ Gaussian preparation uses `exp(-(k-k_0)**2/(4*sigma_k**2))*exp(-i*k*x_0)` on **a
 
 The notebooks cover TLS evolution, total-cap convergence, a `D` sweep, mode selection, and scattering. Each notebook calls the matching Python module. `Experiment.compute_energy()` returns the total Hamiltonian expectation over the stored states for checking energy conservation.
 
-```sh
-python -m experiment.scattering --D 0.2 --ctrl-m-explicit --M 5
-python -m experiment.sweep_D_fidelity --D-values 0.02,0.1,0.2 --out results/sweep.png
-python -m experiment.atom_evolution --D 0.2 --out results/atom.png
+Each experiment file contains its numerical function and calls the engine explicitly:
+
+```python
+experiment = Experiment(config)
+experiment.propagate_state(progress=progress)
+experiment.compute_observables()
 ```
 
-Parameters follow the shared `D`, `L`, `M`, `sigma_k`, `n_max`, `T` conventions and `--option value` CLI. All experiments are invoked through the modules in `experiment/`.
+The notebooks call these functions with dictionaries or an `ExperimentConfig`, prepare DataFrames and draw figures in their own cells. Parameters live in the notebook; there are no argument parsers or command-line entry points. DataFrames can be saved directly with `to_csv`. The optional scattering CSV export remains in `run_scattering`.
+
+Figure exports also belong to notebooks. Their serif/LaTeX fonts, thin lines, light grids and blue/purple/orange palette follow the local `calibration_twophoton_waveguideQED` notebooks; these settings are visible in the first cell.
 
 Only `F_state` and `F_atom` are calculated. The common `full` space is **implicit**: overlaps align physical momenta and retain every shared Fock configuration, without allocating full-space vectors or projecting/renormalizing onto the intersection. A simulated comparator such as `full+totalcap` is a separate choice. Coherent projections can already disagree at time zero; the notebooks display initial fidelities.
 
