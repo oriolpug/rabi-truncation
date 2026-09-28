@@ -1,0 +1,951 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=22mm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs,longtable,array}
+\usepackage{xcolor,listings}
+\usepackage[bookmarks=false]{hyperref}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+\newcommand{\ket}[1]{\lvert #1\rangle}
+\newcommand{\bra}[1]{\langle #1\rvert}
+\newcommand{\code}[1]{\nolinkurl{#1}}
+\newcommand{\Tr}{\operatorname{Tr}}
+\newcommand{\ii}{\mathrm i}
+\newcommand{\Bf}{\mathcal B_f}
+\lstset{basicstyle=\ttfamily\scriptsize,numbers=left,numberstyle=\tiny\color{gray},
+  numbersep=7pt,frame=single,breaklines=true,columns=fullflexible,showstringspaces=false,
+  keepspaces=true,upquote=true}
+\emergencystretch=3em
+\title{Source-to-equation guide to the projected-Fock scattering code\\
+\large Every computational line, in execution order}
+\author{Documentation for \code{codex/code}}
+\date{Source inspected 25 September 2026}
+\begin{document}
+\maketitle
+\begin{abstract}
+This is a reading guide to the actual source. Each listing is copied from the current
+Python files; the table after it accounts for every executable statement. One table
+row can cover the continuation lines of a single Python statement. Comments and
+blank lines have no operation. Equations specify the array or matrix entries produced.
+The notebook section describes its current cells, including settings that differ
+from the function defaults.
+\end{abstract}
+\tableofcontents
+
+\section{The index convention used everywhere}
+\begin{center}\small
+\begin{tabular}{p{.20\textwidth}p{.69\textwidth}}
+\toprule Symbol / Python object & Exact meaning\\\midrule
+$M=\texttt{basis.modes}$ & Number of retained signed field momenta. Python mode index $m=0,\ldots,M-1$.\\
+$N=\texttt{basis.cap}$ & Photon occupation cap; its constraint depends on \code{truncation}.\\
+$k_m=\texttt{k\_tab[m]}$ & Signed wavevector; $\omega_m=|k_m|$ because the code uses $c=1$.\\
+$\mathbf n=(n_0,\ldots,n_{M-1})$ & Field occupation tuple; every tuple has exactly $M$ entries.\\
+$i$ & \code{basis.index[occupation]}: position of a tuple in \code{basis.states}; not a mode index.\\
+$s\in\{0,1\}$ & TLS index: $s=0$ is $\ket g$, $s=1$ is $\ket e$.\\
+$q=2i+s$ & Position of $\ket{\mathbf n_i;s}$ in a ket or Hamiltonian matrix.\\
+$v_q=C_{i,s}$ & Complex amplitude in $\ket\psi=\sum_{i,s}C_{i,s}\ket{\mathbf n_i;s}$.\\
+$B=|\Bf|,\ d=2B$ & Number of occupation tuples; ket length and Hamiltonian dimension.\\
+$L,D,\omega_0,x_a$ & Box length, coupling parameter, TLS frequency, TLS position; keys \code{L}, \code{D}, \code{omega_0}, \code{x_tls}.\\
+$t_j$ & Requested output time. Index $j$ enumerates saved states, not internal ODE steps.\\
+\bottomrule
+\end{tabular}
+\end{center}
+The indexing identity required by almost every file is
+\begin{equation}
+\boxed{v[2i]=C_{i,g},\qquad v[2i+1]=C_{i,e},\qquad
+v[2i:2i+2]=(C_{i,g},C_{i,e}).}
+\label{eq:slice}
+\end{equation}
+Python excludes the right endpoint of a slice, so \code{v[2*i:2*i+2]}
+selects exactly two cells. Similarly, \code{v[0::2]} selects every even
+cell and \code{v[1::2]} every odd cell.
+
+\subsection{Execution graph and shapes}
+\begin{align*}
+\texttt{four dictionaries}
+&\xrightarrow{\texttt{ExperimentConfig}}
+\texttt{Experiment}\\
+&\xrightarrow{\texttt{momentum\_modes}}k\in\mathbb R^M
+\xrightarrow{\texttt{FockBasis}}\{\mathbf n_i\}_{i=0}^{B-1}\\
+&\xrightarrow{\texttt{Hamiltonian}}H_0,V\in\mathbb C^{d\times d}
+\xrightarrow{\texttt{initial\_state}}v_0\in\mathbb C^d\\
+&\xrightarrow{\texttt{sesolve}}v(t_j)\in\mathbb C^d
+\xrightarrow{\texttt{even/odd slices}}C_g,C_e\in\mathbb C^{J\times B}\\
+&\xrightarrow{\texttt{compute\_observables}}
+\mathcal N,P_e,T_1,R_1,P_n\in\mathbb R^J.
+\end{align*}
+Here $J=\lfloor T/\Delta t\rfloor+1$ if all states are stored. The program
+propagates a QuTiP ket; its $d\times d$ Hamiltonian is sparse. A global
+density matrix is never propagated.
+
+\section{Configuration: \code{src/xp_config.py}}
+\lstinputlisting[firstline=1,lastline=15,firstnumber=1]{../src/xp_config.py}
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact role\\\midrule\endfirsthead
+\toprule Lines & Exact role\\\midrule\endhead
+1 & Import \code{dataclass}, which generates an initializer assigning declared fields.\\
+4--5 & Make \code{ExperimentConfig} such a data container.\\
+6 & Docstring only; no computation.\\
+8 & \code{param_photon}: $k_0,\sigma_k,x_0$ and optional field-preparation switches.\\
+9 & \code{param_atom}: $\omega_0,D,x_a,L$, coupling profile, optional TLS preparation.\\
+10 & \code{param_time_evol}: $T,\Delta t$ and optional solver controls.\\
+11 & \code{cutoffs}: IR/UV bounds or explicit signed \code{k_modes}.\\
+12 & Default photon cap $N=3$.\\
+13 & Default basis $\sum_mn_m\leq N$.\\
+14 & Default \code{False} retains counter-rotating transitions.\\
+15 & Default \code{True} requests the complete saved ket trajectory.\\
+\bottomrule
+\end{longtable}
+No grid, state or Hamiltonian is built in this class.
+
+\section{Basis construction: \code{src/states.py:10--36}}
+\lstinputlisting[firstline=10,lastline=36,firstnumber=10]{../src/states.py}
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact operation / equation\\\midrule\endfirsthead
+\toprule Lines & Exact operation / equation\\\midrule\endhead
+10--11 & \code{FockBasis(modes,cap,truncation)} receives $M,N$ and the basis rule.\\
+12--14 & Store the three inputs on the object.\\
+15 & \code{(0,)*modes} repeats zero $M$ times: $\mathbf0=(0,\ldots,0)$.\\
+16--17 & Start the one-occupied-mode basis with exactly one field vacuum.\\
+18--19 & Iterate $m=0,\ldots,M-1$ and $n=1,\ldots,N$: exactly $MN$ pairs.\\
+20--22 & Copy vacuum, set entry $m$ to $n$, append tuple $n\mathbf e_m$. Thus $\Bf^{\rm one}=\{\mathbf0\}\cup\{n\mathbf e_m\}$ and $|\Bf^{\rm one}|=1+MN$. A tuple is hashable for the dictionary at line 34.\\
+23--25 & For total cap, iterate total photon count $r=0,\ldots,N$.\\
+26 & \code{combinations_with_replacement(range(M),r)} lists multisets of $r$ mode indices; a repeated index denotes multiple photons in that mode.\\
+27 & \code{np.bincount(...,minlength=M)} converts the multiset into $(n_0,\ldots,n_{M-1})$, $\sum_mn_m=r$; append this tuple once.\\
+28--29 & \code{product(range(N+1),repeat=M)} enumerates $\{0,\ldots,N\}^M$: an independent cap in each mode.\\
+30--31 & Reject any unknown basis name.\\
+33 & Store the selected field tuples as \code{self.states}.\\
+34 & Create inverse map $\texttt{index}[\mathbf n_i]=i$. \code{enumerate} supplies $i$; later matrix construction uses this same map.\\
+35 & $\texttt{photon\_numbers}[i]=\sum_{m=0}^{M-1}n_m(i)$.\\
+36 & Two TLS states per tuple: $d=2|\Bf|$.\\
+\bottomrule
+\end{longtable}
+\subsection{The three dimensions}
+\begin{align}
+d_{\rm one}&=2(1+MN),\\
+d_{\rm per}&=2(N+1)^M,\\
+d_{\rm tot}&=2\sum_{r=0}^{N}\binom{M+r-1}{r}
+             =2\binom{M+N}{N}.
+\end{align}
+For the last count, distributing $r$ indistinguishable photons among $M$ modes
+gives $\binom{M+r-1}{r}$. Alternatively add
+$n_{\rm slack}=N-\sum_mn_m\geq0$ and count nonnegative solutions of
+$n_0+\cdots+n_{M-1}+n_{\rm slack}=N$.
+For $M=2,N=2$:
+\begin{center}\small
+\begin{tabular}{p{.22\textwidth}p{.54\textwidth}r}
+\toprule Rule & Field occupations & $d$\\\midrule
+\code{truncated} & $(0,0),(1,0),(2,0),(0,1),(0,2)$ & 10\\
+\code{full+totalcap} & preceding five, plus $(1,1)$ & 12\\
+\code{full} & all $(n_0,n_1)\in\{0,1,2\}^2$ & 18\\
+\bottomrule
+\end{tabular}
+\end{center}
+\section{Initial ket: \code{src/states.py:39--93}}
+\subsection{Packet and TLS coefficients}
+\lstinputlisting[firstline=39,lastline=64,firstnumber=39]{../src/states.py}
+\begin{equation}
+\widetilde c_m=
+e^{-(k_m-k_0)^2/(4\sigma_k^2)}
+e^{-\ii k_m x_0}\mathbf1_{k_m>0}
+\quad\text{by default},\qquad
+c_m=\frac{\widetilde c_m}{\sqrt{\sum_j|\widetilde c_j|^2}}.
+\label{eq:packet}
+\end{equation}
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact operation / equation\\\midrule\endfirsthead
+\toprule Lines & Exact operation / equation\\\midrule\endhead
+39--40 & Function receives basis, signed $k$ array, photon and TLS dictionaries; docstring has no operation.\\
+41--42 & Read $k_0$ and $\sigma_k$.\\
+43--44 & Require $k_0>0,\sigma_k>0$ for this packet convention.\\
+46 & Real Gaussian amplitude $e^{-(k_m-k_0)^2/(4\sigma_k^2)}$ for every $m$. Its squared modulus has variance $\sigma_k^2$ before discrete normalization.\\
+47 & Multiply by $e^{-\ii k_mx_0}$; the phase moves $\sum_m c_me^{\ii k_mx}$ toward $x_0$. The array becomes complex.\\
+48--49 & Default \code{right_moving_only=True}: zero all $k_m\leq0$. With \code{False}, remove the indicator in Eq.~\eqref{eq:packet}.\\
+50--52 & Compute $\|\widetilde c\|_2$ and reject zero support, preventing division by zero.\\
+53 & In-place normalization gives $\sum_m|c_m|^2=1$; subsequent \code{packet[m]} means $c_m$.\\
+55 & Read TLS preparation; absent key means \code{g}.\\
+56--61 & Map \code{g}, \code{e}, \code{+}, \code{-} to $\eta=(\eta_g,\eta_e)$: $(1,0)$, $(0,1)$, $(1,1)/\sqrt2$, $(1,-1)/\sqrt2$.\\
+62--63 & Reject other TLS labels.\\
+64 & Convert $\eta$ to a two-entry complex NumPy array.\\
+\bottomrule
+\end{longtable}
+
+\subsection{Number state: why \code{v[2*i:2*i+2] += ...}}
+\lstinputlisting[firstline=66,lastline=79,firstnumber=66]{../src/states.py}
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact operation / equation\\\midrule\endfirsthead
+\toprule Lines & Exact operation / equation\\\midrule\endhead
+66 & Absent \code{state} means \code{number}.\\
+67 & Allocate $v\in\mathbb C^d$, $v_q=0$ for all $q$. Complex dtype retains phases.\\
+68--72 & Select number branch; read integer $n$ (default 1), require $1\leq n\leq N$.\\
+74 & \code{enumerate(packet)} produces $(m,c_m)$ for every retained mode.\\
+75--76 & Construct $\mathbf n^{(m)}=n\mathbf e_m$: all modes empty except $m$.\\
+77 & Look up $i_m=\texttt{basis.index.get}(\mathbf n^{(m)})$; missing tuple returns \code{None}.\\
+78 & Skip absent occupation. \code{is not None} is required because $i_m=0$ is a valid index. Current three bases include every $n\mathbf e_m$ for $1\leq n\leq N$.\\
+79 & By Eq.~\eqref{eq:slice}, add $c_m(\eta_g,\eta_e)$ to the two amplitudes belonging to $\mathbf n^{(m)}$:
+$C_{i_m,g}\mathrel{+}=c_m\eta_g$, $C_{i_m,e}\mathrel{+}=c_m\eta_e$.
+After the loop,
+$\displaystyle\ket{\psi(0)}
+=\left[\sum_m c_m\ket{n\mathbf e_m}\right]\otimes
+(\eta_g\ket g+\eta_e\ket e)$.
+\code{+=} accumulates contributions; for $n\geq1$ the occupations in this loop are distinct.\\
+\bottomrule
+\end{longtable}
+For default $n=1,\eta=(1,0)$, line 79 writes
+$v_{2i_m}=c_m$, $v_{2i_m+1}=0$ and
+$\ket{\psi(0)}=\sum_m c_m\ket{1_m;g}$.
+For $n>1$ the code uses $\sum_m c_m\ket{n_m}$, not
+$(\sum_m c_ma_m^\dagger)^n\ket0/\sqrt{n!}$; the latter includes cross-mode terms.
+
+\subsection{Coherent state and projection}
+\lstinputlisting[firstline=80,lastline=93,firstnumber=80]{../src/states.py}
+Set $\alpha_m=\alpha c_m$. The unprojected product state has coefficient
+\begin{equation}
+\langle\mathbf n|\boldsymbol\alpha\rangle
+=e^{-|\alpha|^2/2}
+\prod_{m=0}^{M-1}\frac{(\alpha c_m)^{n_m}}{\sqrt{n_m!}},
+\qquad \sum_m|c_m|^2=1.
+\label{eq:coherent}
+\end{equation}
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact operation / equation\\\midrule\endfirsthead
+\toprule Lines & Exact operation / equation\\\midrule\endhead
+80--81 & Select coherent branch; read \code{alpha} (default 1), cast to complex.\\
+82 & Visit every retained occupation $\mathbf n_i$ and its index $i$. This loop implements projection by never visiting omitted tuples.\\
+83 & Initialize field coefficient at $e^{-|\alpha|^2/2}=\prod_m e^{-|\alpha c_m|^2/2}$.\\
+84--85 & Multiply by $(\alpha c_m)^{n_m}/\sqrt{n_m!}$ for each field mode. Result is Eq.~\eqref{eq:coherent}.\\
+86 & Assign $(C_{i,g},C_{i,e})=\texttt{coefficient}\,(\eta_g,\eta_e)$; each tuple occurs once.\\
+87--88 & Reject unknown preparation name.\\
+90--92 & Compute $\|v\|_2$ and reject zero support. Projection can make this norm less than one.\\
+93 & Return QuTiP ket $v/\|v\|_2=P_{\Bf}\ket{\boldsymbol\alpha,\eta}/\|P_{\Bf}\ket{\boldsymbol\alpha,\eta}\|$.\\
+\bottomrule
+\end{longtable}
+Different bases can therefore produce different \emph{normalized} coherent
+initial states; their fidelity may already be below one at $t=0$.
+
+\section{Hamiltonian assembly: \code{src/hamiltonians.py}}
+\subsection{Mathematical target and constructor}
+Write $f_m=1$ for \code{flat} and $f_m=\sqrt{|k_m|}$ for \code{sqrt}.
+The finite Hamiltonian constructed by the code is
+\begin{align}
+H(D)&=H_0+D V_1,\label{eq:HD}\\
+H_0&=\sum_m|k_m|a_m^\dagger a_m
+       +\omega_0\ket e\bra e,\label{eq:H0}\\
+V_1&=\sum_m\left(u_ma_m+u_m^*a_m^\dagger\right)
+                  (\sigma^++\sigma^-),\qquad
+u_m=\frac{\ii f_m e^{-\ii k_mx_a}}{\sqrt L}.
+\label{eq:V}
+\end{align}
+Here $\sigma^+=\ket e\bra g$, $\sigma^-=\ket g\bra e$.
+The actual operator is projected onto the enumerated finite basis:
+$P_{\mathcal B}H(D)P_{\mathcal B}$.
+\lstinputlisting[firstline=8,lastline=15,firstnumber=8]{../src/hamiltonians.py}
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact operation\\\midrule\endfirsthead
+\toprule Lines & Exact operation\\\midrule\endhead
+8--9 & Constructor receives basis, signed momentum array, TLS dictionary and RWA switch.\\
+10 & Store the very same \code{FockBasis} whose indices define ket amplitudes.\\
+11 & Convert \code{k_tab} to a NumPy array so multiplication and absolute value act elementwise.\\
+12--13 & Store physical parameters and RWA flag.\\
+14 & Call \code{free()} immediately; store sparse diagonal $H_0$.\\
+15 & Call \code{interaction()} immediately; store sparse unit-coupling $V_1$. This construction runs before \code{sesolve}.\\
+\bottomrule
+\end{longtable}
+
+\subsection{Free diagonal: every assigned entry}
+\lstinputlisting[firstline=17,lastline=24,firstnumber=17]{../src/hamiltonians.py}
+For occupation tuple $\mathbf n_i$ define
+$E_f(i)=\sum_{m=0}^{M-1}|k_m|n_m(i)$.
+Then
+\begin{equation}
+(H_0)_{2i,2i}=E_f(i),\qquad
+(H_0)_{2i+1,2i+1}=E_f(i)+\omega_0.
+\label{eq:Hdiag}
+\end{equation}
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact operation\\\midrule\endfirsthead
+\toprule Lines & Exact operation\\\midrule\endhead
+17--18 & Enter method and read $\omega_0$.\\
+19 & Allocate real array \code{energies} of length $d$, initially zero. No dense $d\times d$ matrix is allocated.\\
+20 & Iterate each occupation tuple $\mathbf n_i$ and its index $i$.\\
+21 & \code{np.abs(k_tab)} is $(|k_0|,\ldots,|k_{M-1}|)$; dot product with the tuple is $E_f(i)$.\\
+22 & Position $2i$ is $\ket{\mathbf n_i;g}$, giving first diagonal in Eq.~\eqref{eq:Hdiag}.\\
+23 & Position $2i+1$ is $\ket{\mathbf n_i;e}$; add $\omega_0$ for TLS excitation.\\
+24 & \code{diags(...,format="csr")} creates compressed-sparse-row diagonal $H_0$.\\
+\bottomrule
+\end{longtable}
+
+\subsection{Profile and every sparse transition}
+\lstinputlisting[firstline=26,lastline=60,firstnumber=26]{../src/hamiltonians.py}
+Bosonic matrix elements are
+\begin{equation}
+a_m\ket{\mathbf n;s}=\sqrt{n_m}\ket{\mathbf n-\mathbf e_m;s},
+\quad
+a_m^\dagger\ket{\mathbf n;s}=\sqrt{n_m+1}\ket{\mathbf n+\mathbf e_m;s}.
+\label{eq:boson}
+\end{equation}
+The TLS factor flips $s\mapsto1-s$. Consequently, with source column
+$q=2i+s$ and target row $p=2j+(1-s)$,
+\begin{align}
+V_{1,pq}^{(-)}&=u_m\sqrt{n_m}
+&&\text{if }\mathbf n_j=\mathbf n_i-\mathbf e_m,\label{eq:down}\\
+V_{1,pq}^{(+)}&=u_m^*\sqrt{n_m+1}
+&&\text{if }\mathbf n_j=\mathbf n_i+\mathbf e_m.\label{eq:up}
+\end{align}
+The matrix entry is $H_{pq}=D V_{1,pq}$; matrix convention is
+$H_{pq}=\bra{\text{target }p}H\ket{\text{source }q}$.
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact operation / equation\\\midrule\endfirsthead
+\toprule Lines & Exact operation / equation\\\midrule\endhead
+26--29 & Enter interaction builder; read $L,x_a$ and profile name.\\
+30--31 & For \code{sqrt}, vector $f_m=\sqrt{|k_m|}$; each nonzero mode gets frequency-dependent coupling.\\
+32--33 & For \code{flat}, vector $f_m=1$.\\
+34--35 & Reject any other coupling profile.\\
+36 & Vectorized formula $u_m=\ii f_m e^{-\ii k_mx_a}/\sqrt L$. This is \emph{unit} $D$; line 65 inserts $D$. \code{1j} is Python's $\ii$.\\
+38 & Three empty lists will hold target rows $p$, source columns $q$, and complex entries $V_{1,pq}$.\\
+39 & Loop over every valid source occupation $\mathbf n_i$. This visits $B$ tuples, not $B^2$ pairs.\\
+40 & Loop over source TLS index $s=0,1$.\\
+41 & Compute source ket index $q=2i+s$ from Eq.~\eqref{eq:slice}.\\
+42 & Try a transition in each field mode $m=0,\ldots,M-1$.\\
+43 & Downward transition requires $n_m>0$. Without RWA allow either $s$. With RWA allow only $s=0$: annihilate a photon and excite TLS, $a_m\sigma^+$.\\
+44--45 & Copy the occupation tuple and subtract one in mode $m$, giving $\mathbf n-\mathbf e_m$ while preserving all other fields.\\
+46 & Look up target occupation index $j$. Direct dictionary access is safe because all three bases are downward closed: removing one photon from any retained tuple remains retained.\\
+47 & Append target row $p=2j+1-s$; $1-s$ flips $g\leftrightarrow e$.\\
+48 & Append source column $q$.\\
+49 & Append $u_m\sqrt{n_m}$, exactly Eq.~\eqref{eq:down}; the square root is required by $a_m\ket{n_m}=\sqrt{n_m}\ket{n_m-1}$.\\
+50 & Upward transition: without RWA allow either $s$; with RWA allow only $s=1$ so TLS de-excites while a photon is created, $a_m^\dagger\sigma^-$.\\
+51--52 & Copy tuple and increment field mode $m$, giving $\mathbf n+\mathbf e_m$.\\
+53 & \code{index.get} returns \code{None} when the new occupation violates the chosen truncation. This realizes $P_{\mathcal B}VP_{\mathcal B}$ at the upper boundary.\\
+54 & Include upward edge only if target is in the basis. Again $j=0$ is valid; testing \code{j is not None} handles it.\\
+55--56 & Append target row $2j+1-s$ and source column $q$.\\
+57 & Append $u_m^*\sqrt{n_m+1}$, Eq.~\eqref{eq:up}; complex conjugation is required for Hermiticity of $u_ma_m+u_m^*a_m^\dagger$.\\
+59--60 & Construct COO sparse matrix from triplets $(p,q,V_{1,pq})$ with shape $d\times d$, then convert to CSR for matrix-vector operations. A COO entry at \code{rows[r],cols[r]} gets \code{values[r]}.\\
+\bottomrule
+\end{longtable}
+For one mode, $N=1$, $x_a=0$, and $f=\sqrt{k}$, the order
+$(\ket{0;g},\ket{0;e},\ket{1;g},\ket{1;e})$ gives
+\[
+H=\begin{pmatrix}
+0&0&0&D u\\
+0&\omega_0&D u&0\\
+0&D u^*&k&0\\
+D u^*&0&0&k+\omega_0
+\end{pmatrix},
+\qquad u=\frac{\ii\sqrt{k}}{\sqrt L}.
+\]
+Rows and columns are displayed to expose the index rule. With RWA, only
+the $(\ket{0;e},\ket{1;g})$ block remains coupled.
+For a nonzero $x_a$, $u$ carries the phase in Eq.~\eqref{eq:V}.
+
+\subsection{Adding the physical coupling}
+\lstinputlisting[firstline=62,lastline=65,firstnumber=62]{../src/hamiltonians.py}
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact operation\\\midrule\endfirsthead
+\toprule Lines & Exact operation\\\midrule\endhead
+62 & \code{D=None} allows either configured coupling or an explicit override.\\
+63--64 & If no override, read $D=\texttt{param\_atom["D"]}$.\\
+65 & Form $H(D)=H_0+D V_1$ as a sparse sum and wrap it as a QuTiP \code{Qobj}. No global density matrix is created.\\
+\bottomrule
+\end{longtable}
+
+\section{Grid and resource count: \code{src/experiment.py:12--57}}
+\subsection{Signed momenta}
+\lstinputlisting[firstline=12,lastline=25,firstnumber=12]{../src/experiment.py}
+For periodic length $L$, the candidate momenta are $k_j=2\pi j/L$.
+The automatic branch returns
+\begin{equation}
+\mathcal K=\left\{\frac{2\pi j}{L}:
+|j|\leq j_{\max},\quad
+\Omega_{\rm IR}-10^{-12}\leq\left|\frac{2\pi j}{L}\right|
+\leq\Omega_{\rm UV}+10^{-12}\right\}.
+\label{eq:grid}
+\end{equation}
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact operation\\\midrule\endfirsthead
+\toprule Lines & Exact operation\\\midrule\endhead
+12--13 & Function takes atom parameters and cutoff dictionary; docstring states signed periodic momenta.\\
+14 & If \code{cutoffs} contains \code{k_modes}, use those prescribed values instead of generating an IR/UV grid.\\
+15 & Cast explicit values to one NumPy float array. Their phases and $|k|$ later use these exact numbers.\\
+16--17 & Require one-dimensional, nonempty and pairwise distinct wavevectors. \code{np.unique} counts exact distinct floats.\\
+18 & Sort explicit $k$ from negative to positive; source-file mode index $m$ follows this sorted order.\\
+20 & Read $L$.\\
+21 & $j_{\max}=\lceil\Omega_{\rm UV}L/(2\pi)\rceil$. Ceiling ensures the candidate integer range reaches the UV edge.\\
+22 & \code{np.arange(-m_max,m_max+1)} gives all integers from $-j_{\max}$ through $+j_{\max}$, inclusive; multiply by $2\pi/L$.\\
+23--24 & Boolean mask is the intersection of lower and upper inequalities in Eq.~\eqref{eq:grid}. \code{&} is elementwise logical AND. The $10^{-12}$ margin protects an intended boundary from floating-point roundoff.\\
+25 & Boolean indexing \code{k_tab[band]} returns only retained momenta. If $\Omega_{\rm IR}>0$, zero is removed automatically.\\
+\bottomrule
+\end{longtable}
+In the example $L=20\pi$, $\Omega_{\rm IR}=0.8$,
+$\Omega_{\rm UV}=1.2$, the spacing is $\Delta k=0.1$ and $M=10$:
+\[
+\mathcal K=\{-1.2,-1.1,-1.0,-0.9,-0.8\}
+\cup\{0.8,0.9,1.0,1.1,1.2\}.
+\]
+An explicit \code{k_modes} array is not checked against periodic quantization
+or for zero; that branch implements the supplied finite set literally.
+
+\subsection{Dimension formulas and memory estimate}
+\lstinputlisting[firstline=28,lastline=57,firstnumber=28]{../src/experiment.py}
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact operation / equation\\\midrule\endfirsthead
+\toprule Lines & Exact operation / equation\\\midrule\endhead
+28--31 & Signature and docstring. \code{param_photon} is absent because basis size and saved-state memory do not depend on packet coefficients.\\
+33 & $M=|\mathcal K|$, computed by the same grid function used in the experiment.\\
+34 & $N=\texttt{n\_max}$.\\
+35--36 & Reject $M=0$ or $N<1$; a photon packet needs at least one mode.\\
+37--41 & Store three exact ket dimensions derived in the basis section: $2\binom{M+N}{N}$, $2(1+MN)$, and $2(N+1)^M$. \code{comb} computes an integer binomial coefficient.\\
+42--43 & Reject a name not in the dimension dictionary.\\
+45 & Read requested final time $T$ and output spacing $\Delta t$.\\
+46--47 & Require positive $T,\Delta t$.\\
+49 & Number of output samples $J=\lfloor T/\Delta t\rfloor+1$, corresponding to $t_j=j\Delta t$, $j=0,\ldots,J-1$. If $T/\Delta t$ is not integer, $t_{J-1}<T$.\\
+50 & Choose $d$ using the basis name.\\
+51 & Complex128 amplitude is 16 bytes. Approximate ket-history storage in GiB is $16dJ/2^{30}$ if all states stored, or $16d/2^{30}$ if only final ket. This excludes sparse $H$, list/QuTiP overhead, NumPy copies, and observable arrays.\\
+52 & Advisory threshold: \code{feasible} iff $d\le100\,000$ and estimated history $\le1$ GiB. This function only returns the Boolean; \code{Experiment} does \emph{not} enforce it.\\
+53--55 & Print $M$, scheme, $d$, $J$, estimated GiB and advisory Boolean. The \code{f"..."} expressions format values; \code{:,} inserts thousands separators, \code{:.3g} prints three significant digits.\\
+56--57 & Return these five numbers/Boolean in a Python dictionary for a notebook to inspect.\\
+\bottomrule
+\end{longtable}
+For the current notebook parameters $M=10,N=3$,
+\[
+d_{\rm full}=2(4)^{10}=2{,}097{,}152,\quad
+J=281,\quad
+16dJ/2^{30}\simeq8.78\ {\rm GiB}.
+\]
+The notebook presently prints \code{feasible=False} but still starts that run;
+the call site is analyzed below.
+
+\section{\code{Experiment}: construction and propagation}
+\subsection{Object construction, \code{src/experiment.py:60--85}}
+\lstinputlisting[firstline=60,lastline=85,firstnumber=60]{../src/experiment.py}
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact operation / dependency\\\midrule\endfirsthead
+\toprule Lines & Exact operation / dependency\\\midrule\endhead
+60--63 & Class and constructor; input is one \code{ExperimentConfig}.\\
+64--66 & Keep direct references to the three input dictionaries; the object can read their values later.\\
+67--70 & Copy $N$, scheme, RWA switch, and storage switch from config.\\
+72 & Build $\mathcal K=(k_0,\ldots,k_{M-1})$ using Eq.~\eqref{eq:grid}.\\
+73 & $M=\texttt{len(k\_tab)}$; subsequent arrays use this \emph{actual} mode count.\\
+75--76 & Reject a band with zero modes before trying to construct packet or Hamiltonian.\\
+78 & Construct occupation list, inverse index, photon-count array and ket dimension as described above.\\
+79 & Alias the same photon-count array for later sector masks.\\
+80 & Construct $H_0$ and $V_1$ immediately. This is where sparse matrix assembly cost occurs.\\
+81 & Form QuTiP $H=H_0+D V_1$.\\
+82 & Construct and normalize initial QuTiP ket with the \emph{same} basis ordering and $k$ array.\\
+83--85 & Set future coefficient arrays and observables to \code{None}; they are unavailable until propagation and measurement methods run.\\
+\bottomrule
+\end{longtable}
+No solver is run in \code{__init__}; however, allocating \code{FockBasis}
+and building $H$ can already be expensive. The memory Boolean above does not
+stop this constructor.
+
+\subsection{QuTiP call and every output slice, \code{src/experiment.py:87--110}}
+\lstinputlisting[firstline=87,lastline=110,firstnumber=87]{../src/experiment.py}
+\begin{equation}
+\ii\,\partial_t v(t)=H v(t),\qquad v(0)=v_0,\qquad
+t_j=j\Delta t,\quad
+j=0,\ldots,\left\lfloor T/\Delta t\right\rfloor.
+\label{eq:ode}
+\end{equation}
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact operation / equation\\\midrule\endfirsthead
+\toprule Lines & Exact operation / equation\\\midrule\endhead
+87--88 & Method and docstring; \code{progress=False} disables progress display unless requested.\\
+89 & Read $T,\Delta t$ from dictionary.\\
+90--91 & Require positive values.\\
+92 & \code{np.arange(J)*dt} creates $t_j=j\Delta t$. This is an \emph{output} grid; BDF chooses internal steps independently. Last saved time is $\lfloor T/\Delta t\rfloor\Delta t$.\\
+93 & Solver method from dictionary, default \code{"bdf"}.\\
+94--95 & \code{qutip.sesolve(H,state0,times,...)} numerically solves Eq.~\eqref{eq:ode}; input is a ket, so state dimension is $d$ rather than $d^2$.\\
+96 & Pass selected integrator method.\\
+97 & If \code{store_state=True}, store every ket $v(t_j)$; otherwise retain no trajectory list.\\
+98 & Request final ket in either storage mode.\\
+99 & \code{normalize_output=False}: do not force $\|v(t_j)\|=1$ after numerical integration. Norm deviation remains observable.\\
+100--101 & Relative/absolute ODE tolerances, defaults $10^{-9},10^{-11}$. These constrain local integration error according to solver conventions, not the Fock/mode truncation error.\\
+102 & Show \code{tqdm} progress bar only if \code{progress=True}.\\
+103 & End the solver call; \code{self.result} contains QuTiP states and metadata.\\
+104--105 & If full storage, convert every QuTiP ket to a one-dimensional complex NumPy vector via \code{state.full()[:,0]}; stack rows to shape $(J,d)$. \code{[:,0]} removes the single-column dimension of a ket.\\
+106 & \code{vectors[:,0::2]} extracts $C_g(t_j,i)$ and \code{vectors[:,1::2]} extracts $C_e(t_j,i)$, both shape $(J,B)$ by Eq.~\eqref{eq:slice}.\\
+107--108 & Final-only branch extracts one vector of shape $(d,)$.\\
+109 & Even/odd slices now yield two arrays of shape $(B,)$; no time axis.\\
+110 & Return the arrays. They are also stored as object attributes.\\
+\bottomrule
+\end{longtable}
+QuTiP's solver errors and finite-model errors are separate:
+\[
+\underbrace{\|v_{\rm numerical}(t)-v_{\rm exact\ finite}(t)\|}_{\text{ODE error}}
+\quad\text{versus}\quad
+\underbrace{\|v_{\rm exact\ finite}(t)-\psi_{\rm target}(t)\|}_{\text{basis/grid model error}}.
+\]
+The saved norm diagnoses the first on the chosen finite Hamiltonian; it cannot
+certify that omitted Fock states or momentum modes are unimportant.
+
+\section{Scattering observables: \code{src/experiment.py:112--152}}
+\subsection{Selecting the one-waveguide-photon sector}
+\lstinputlisting[firstline=112,lastline=117,firstnumber=112]{../src/experiment.py}
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact operation\\\midrule\endfirsthead
+\toprule Lines & Exact operation\\\midrule\endhead
+112--113 & Helper function and docstring: select field occupations with one photon.\\
+114--115 & List comprehension iterates tuple index $i$; the tuple itself is unused here.\\
+116 & Require $\sum_{m<M}n_m(i)=1$. Thus there is exactly one occupied waveguide mode.\\
+117 & Return matching tuple indices as an integer NumPy array, suitable for selecting columns of $C_g$.\\
+\bottomrule
+\end{longtable}
+
+\subsection{Probabilities, direction and photon-count sectors}
+\lstinputlisting[firstline=119,lastline=140,firstnumber=119]{../src/experiment.py}
+Let $C_{j,i,s}$ be the returned amplitudes. The exact dictionary formulas are
+\begin{align}
+\mathcal N_j&=\sum_i\bigl(|C_{j,i,g}|^2+|C_{j,i,e}|^2\bigr),\\
+P_{e,j}&=\sum_i|C_{j,i,e}|^2,\\
+T_{1,j}&=\sum_{m:k_m>0}|C_{j,i(1_m),g}|^2,\qquad
+R_{1,j}=\sum_{m:k_m<0}|C_{j,i(1_m),g}|^2,\\
+P_{n,j}&=\sum_{i:\sum_{m<M}n_m(i)=n}
+  \bigl(|C_{j,i,g}|^2+|C_{j,i,e}|^2\bigr).
+\label{eq:obs}
+\end{align}
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact operation / equation\\\midrule\endfirsthead
+\toprule Lines & Exact operation / equation\\\midrule\endhead
+119--121 & Reject measurement before \code{propagate_state}; coefficient arrays would still be \code{None}.\\
+122--123 & \code{np.atleast_2d} turns final-only shape $(B,)$ into $(1,B)$; stored trajectory $(J,B)$ is unchanged. Both branches can now use \code{axis=1}.\\
+124 & Elementwise $P_{j,i}=|C_{j,i,g}|^2+|C_{j,i,e}|^2$. \code{np.abs} is modulus, not real part.\\
+125 & Get tuple indices with one waveguide photon.\\
+126--127 & For each such tuple, \code{np.argmax(field occupations)} returns its unique occupied mode $m$ because total field count is exactly one.\\
+128 & Keep one-photon tuple indices whose occupied $k_m>0$; right-moving set.\\
+129 & Keep corresponding $k_m<0$ indices; left-moving set. A possible $k_m=0$ belongs to neither.\\
+131--132 & Create output dictionary; time vector is all $t_j$ if stored or only final $t_{J-1}$ otherwise.\\
+133 & Sum $P_{j,i}$ over \code{axis=1} (basis axis) to get $\mathcal N_j$.\\
+134 & Sum excited amplitudes over basis axis to get $P_{e,j}$.\\
+135 & Select ground-TLS amplitudes in right-moving one-photon tuples, square modulus and sum: $T_{1,j}$.\\
+136 & Same for left-moving tuples: $R_{1,j}$.\\
+137 & Close dictionary literal.\\
+138 & Loop $n=0,\ldots,\max_i\sum_{m<M}n_m(i)$. For \code{full}, the largest $n$ can be $MN$, not $N$.\\
+139 & Boolean mask \code{photon_numbers==n} selects occupation columns with $n$ waveguide photons. Sum their $P_{j,i}$ to get $P_{n,j}$. TLS excitation is not included in $n$.\\
+140 & Return and retain dictionary of time arrays.\\
+\bottomrule
+\end{longtable}
+$T_1+R_1$ need not equal one: TLS-excited and multi-photon sectors can retain
+probability. These are finite-time sector probabilities; interpreting them as
+asymptotic scattering requires the outgoing packet to have cleared the TLS
+without periodic wraparound.
+
+\subsection{Position-space one-photon amplitude}
+\lstinputlisting[firstline=142,lastline=152,firstnumber=142]{../src/experiment.py}
+\begin{equation}
+\phi_{1,g}(x,t_j)=\frac1{\sqrt L}
+\sum_{m=0}^{M-1}
+C_{j,i(1_m),g}\,e^{\ii k_mx}.
+\label{eq:phi}
+\end{equation}
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact operation\\\midrule\endfirsthead
+\toprule Lines & Exact operation\\\midrule\endhead
+142--143 & Method signature and picture convention in docstring.\\
+144--145 & Reject call before amplitudes exist.\\
+146 & With full storage choose row $j=\texttt{i}$; with final-only storage use its sole vector, so argument \code{i} has no effect in that branch.\\
+147 & Select one-waveguide-photon tuple indices.\\
+148--149 & For each tuple find its unique occupied waveguide mode $m$.\\
+150 & Convert requested positions $x_\ell$ to NumPy array.\\
+151--152 & \code{np.outer(x_tab,k_tab[mode_index])} makes matrix $X_{\ell m}=x_\ell k_m$; exponentiation gives $e^{\ii X_{\ell m}}$; \code{@} multiplies by coefficients $C_{j,i(1_m),g}$; divide by $\sqrt L$. Output is $\phi_{1,g}(x_\ell,t_j)$ for each position.\\
+\bottomrule
+\end{longtable}
+The solver already evolves Schr\"odinger-picture coefficients, so Eq.~\eqref{eq:phi}
+needs no additional factor $e^{-\ii|k_m|t}$.
+
+\section{Comparing two bases: \code{src/fidelities.py}}
+For two normalized global kets $A,B$, three squared fidelities are returned:
+\begin{equation}
+F_{\rm state}=|\langle\psi_A|\psi_B\rangle|^2,\quad
+F_{\rm atom}=\left[\Tr\sqrt{\sqrt{\rho_a^A}\rho_a^B
+  \sqrt{\rho_a^A}}\right]^2,\quad
+F_{\rm photon}=\left[\Tr\sqrt{\sqrt{\rho_f^A}\rho_f^B
+  \sqrt{\rho_f^A}}\right]^2.
+\label{eq:fids}
+\end{equation}
+The reduced matrices $\rho_a$ and $\rho_f$ mean partial traces over field and
+TLS, respectively. They are \emph{diagnostics} derived from ket coefficients;
+the global evolution remains closed and pure. The code computes $F_{\rm photon}$
+without allocating a large field density matrix.
+
+\subsection{Occupation-key map and TLS reduction}
+\lstinputlisting[firstline=7,lastline=16,firstnumber=7]{../src/fidelities.py}
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact operation / equation\\\midrule\endfirsthead
+\toprule Lines & Exact operation / equation\\\midrule\endhead
+7--8 & Define the helper and make an empty dictionary: occupation key $\mapsto$ the two amplitudes $(C_g,C_e)$.\\
+9 & Visit each occupation $\mathbf n_i$ in this experiment's own basis ordering.\\
+10 & Save two-component vector \code{vector[2*i:2*i+2]} under the field occupation tuple, using Eq.~\eqref{eq:slice}. This changes labels without changing amplitudes.\\
+11 & Return occupation-to-amplitude dictionary.\\
+14--15 & Define the TLS reduction helper and reshape a length-$d$ ket into $B\times2$ coefficient matrix $C_{is}$; \code{-1} asks NumPy to infer $B=d/2$.\\
+16 & \code{coefficients.T @ coefficients.conj()} yields $(\rho_a)_{ss'}=\sum_i C_{is}C^*_{is'}$. It is $2\times2$, Hermitian, trace one for a normalized ket. \code{.T} transposes; \code{.conj()} conjugates entrywise.\\
+\bottomrule
+\end{longtable}
+The ordering of raw vectors differs among truncations. Comparing entry number
+$q$ across two vectors would generally compare different physical occupations.
+The dictionary at line 10 makes equality of keys, rather than equality of
+integer positions, the criterion for a physical overlap.
+
+\subsection{Preconditions, normalization and the $2\times2$ matrix $G$}
+\lstinputlisting[firstline=19,lastline=44,firstnumber=19]{../src/fidelities.py}
+In a common field space, decompose
+\begin{equation}
+\ket{\psi_A}=\ket{\phi_g^A}\ket g+\ket{\phi_e^A}\ket e,
+\qquad
+\ket{\psi_B}=\ket{\phi_g^B}\ket g+\ket{\phi_e^B}\ket e.
+\end{equation}
+Define the $2\times2$ cross-overlap matrix
+\begin{equation}
+G_{ss'}=\langle\phi_s^A|\phi_{s'}^B\rangle
+=\sum_{\mathbf n\ \text{common}}
+ C_{A,\mathbf n,s}^*C_{B,\mathbf n,s'},
+\quad s,s'\in\{g,e\}.
+\label{eq:G}
+\end{equation}
+An occupation absent from one basis has zero amplitude after embedding, hence
+only keys in the intersection contribute.
+\begin{longtable}{p{.14\textwidth}p{.76\textwidth}}
+\toprule Lines & Exact operation / equation\\\midrule\endfirsthead
+\toprule Lines & Exact operation / equation\\\midrule\endhead
+19--20 & Function compares two completed experiments; docstring specifies squared fidelities.\\
+21--22 & Require stored trajectories, since the function returns values at every $t_j$. Final-only objects do not have those lists.\\
+23--24 & Require exactly equal signed arrays $k_m$ in the same order. A tuple entry $n_m$ must denote the same physical mode in both experiments.\\
+25--26 & Require exactly equal output-time arrays; \code{zip} below then pairs states at the same time.\\
+28 & Initialize three Python lists to collect scalar fidelity values over time.\\
+29 & \code{zip} pairs $A$ and $B$ QuTiP kets at corresponding output indices.\\
+30 & \code{ket.full()} is a two-dimensional column array; \code{[:,0]} yields a one-dimensional vector.\\
+31--32 & Divide each vector by its Euclidean norm. Fidelity is defined for normalized states; this removes small ODE norm drift \emph{for metrics only}. Observable \code{norm} remains raw.\\
+33--34 & Convert each vector into occupation-key dictionary with aligned TLS pairs.\\
+35 & Allocate complex $2\times2$ matrix $G=0$.\\
+36 & Python \code{a.keys() & b.keys()} is set intersection: iterate occupations physically present in both bases.\\
+37 & \code{np.outer(a[key].conj(),b[key])} has entry $C^*_{A,\mathbf n,s}C_{B,\mathbf n,s'}$. Sum over keys yields Eq.~\eqref{eq:G}.\\
+38 & $\Tr G=\sum_s\langle\phi_s^A|\phi_s^B\rangle=\langle\psi_A|\psi_B\rangle$, so append $|\Tr G|^2=F_{\rm state}$.\\
+39 & \code{np.linalg.svd(G,compute_uv=False)} gives the two singular values $\sigma_1,\sigma_2$. Append $(\sigma_1+\sigma_2)^2=F_{\rm photon}$, the exact Uhlmann fidelity between the reduced field states.\\
+40--41 & Construct each $2\times2$ TLS reduced matrix using line 16, wrapped for QuTiP.\\
+42 & QuTiP returns root fidelity $\Tr\sqrt{\sqrt{\rho_a^A}\rho_a^B\sqrt{\rho_a^A}}$; square it to match Eq.~\eqref{eq:fids}.\\
+43--44 & Convert lists to NumPy arrays of length $J$ and return dictionary with keys \code{state}, \code{atom}, \code{photon}.\\
+\bottomrule
+\end{longtable}
+Why line 39 is exact: $\rho_f^A=
+\ket{\phi_g^A}\bra{\phi_g^A}+\ket{\phi_e^A}\bra{\phi_e^A}$
+has rank at most two, and likewise for $B$. The nonzero singular values needed
+for Uhlmann fidelity are those of the $2\times2$ cross Gram matrix $G$.
+Thus no $B\times B$ density matrix or $d^2$ global density matrix is needed.
+The ratio $F_{\rm state}/F_{\rm atom}$ used elsewhere is not this fidelity.
+
+\section{Script entry point: \code{experiments/scattering.py}}
+\lstinputlisting[firstline=1,lastline=46,firstnumber=1]{../experiments/scattering.py}
+\begin{longtable}{p{.16\textwidth}p{.74\textwidth}}
+\toprule Lines & Exact operation\\\midrule\endfirsthead
+\toprule Lines & Exact operation\\\midrule\endhead
+1--7 & Docstring and imports: \code{csv} writes optional output; \code{sys} and \code{Path} locate modules/files; \code{np} is only used by the currently commented example.\\
+9 & \code{Path(__file__).resolve().parents[1]} is the \code{codex/code} project root.\\
+10 & Insert project root at the front of Python's import path.\\
+12--13 & Import configuration and experiment classes after path insertion.\\
+16--22 & Four required dictionaries; optional $N$, truncation, RWA, state storage, CSV writing and progress. Defaults: $N=3$, \code{full+totalcap}, \code{RWA=False}, \code{store_state=True}, no file, no progress bar.\\
+24 & Docstring: return an \code{Experiment} object.\\
+26--33 & Construct \code{ExperimentConfig} with explicit keyword assignments. \code{store_results} and \code{progress} control I/O, not physics, and are not in the config.\\
+35 & Constructor builds grid, basis, $H_0,V_1,H$, and initial ket.\\
+36 & QuTiP propagates Eq.~\eqref{eq:ode}; save amplitudes.\\
+37 & Compute Eq.~\eqref{eq:obs}; dictionary also stored on the experiment.\\
+39 & Enter optional CSV branch only if \code{store_results=True}.\\
+40 & Set output path \code{results/csv_files/scattering.csv} under project root.\\
+41 & Create parent directories as needed; existing directories are accepted.\\
+42 & Open file for writing; existing CSV at this path is replaced. \code{newline=""} delegates line endings to CSV module.\\
+43 & Create a CSV writer.\\
+44 & Write metric names as header in dictionary insertion order.\\
+45 & \code{zip(*observables.values())} transposes metric arrays: row $j$ contains all values at $t_j$.\\
+46 & Return complete experiment for notebook inspection.\\
+\bottomrule
+\end{longtable}
+Lines 49--62 are presently \emph{comments}. Running
+\code{python3 experiments/scattering.py} currently defines the function and
+exits without a simulation. The README's run command describes an earlier
+version; the active calls are in the notebook.
+
+\section{Notebook \code{notebooks/scattering.ipynb}: current cells}
+Cell numbers below start at zero, matching their JSON order. Markdown cells
+0, 5 and 7 are text only. Stored notebook \emph{outputs} are historical; a
+source cell may have changed since they were generated. Outputs of comparison
+cells 6 and 8 were cleared when the basis options changed.
+
+\subsection{Cell 1: imports and module lookup}
+\begin{lstlisting}
+import sys
+from pathlib import Path
+import numpy as np
+import matplotlib.pyplot as plt
+project_root = Path.cwd().parent
+sys.path.insert(0, str(project_root))
+from src.experiment import resource_estimation
+from src.fidelities import fidelities_over_time
+from experiments.scattering import run_scattering
+\end{lstlisting}
+\begin{longtable}{p{.25\textwidth}p{.65\textwidth}}
+\toprule Statement & Exact role\\\midrule\endfirsthead
+\toprule Statement & Exact role\\\midrule\endhead
+\code{import sys} & Access module search path.\\
+\code{Path} & \code{from pathlib import Path}: filesystem path object.\\
+\code{import numpy as np} & Short name for arrays, $\pi$, means, nearest-index selection and geometric grids.\\
+\code{import matplotlib.pyplot as plt} & Short name for plotting.\\
+\code{Path.cwd().parent} & Assumes the working directory is \code{codex/code/notebooks}; parent is the project root.\\
+\code{sys.path.insert} & Put that root first in Python's import search list.\\
+\code{resource_estimation} & Import $M,d,J$ and memory estimator.\\
+\code{fidelities_over_time} & Import exact comparison of two trajectories.\\
+\code{run_scattering} & Import construction, propagation and measurement wrapper.\\
+\bottomrule
+\end{longtable}
+
+\subsection{Cell 2: physical inputs and advisory count}
+\begin{lstlisting}
+param_photon = {'k_0': 1.0, 'sigma_k': 0.10, 'x_0': -12.0}
+param_atom = {'omega_0': 1.0, 'D': 0.45, 'x_tls': 0.0,
+              'L': 20*np.pi, 'coupling': 'sqrt'}
+param_time_evol = {'T': 28.0, 'dt': 0.1}
+cutoffs = {'ir_cutoff': 0.8, 'uv_cutoff': 1.2}
+n_max = 3
+truncation = 'full'
+estimate = resource_estimation(param_atom, param_time_evol, cutoffs,
+                               n_max=n_max, truncation=truncation)
+\end{lstlisting}
+\begin{longtable}{p{.25\textwidth}p{.65\textwidth}}
+\toprule Statement & Exact meaning / consequence\\\midrule\endfirsthead
+\toprule Statement & Exact meaning / consequence\\\midrule\endhead
+\code{param_photon} & Eq.~\eqref{eq:packet}: $k_0=1$, $\sigma_k=0.1$, $x_0=-12$. Absent \code{state} means one photon; absent \code{right_moving_only} means $k>0$ only.\\
+\code{param_atom} & $\omega_0=1,D=0.45,x_a=0,L=20\pi$, $f_m=\sqrt{|k_m|}$. Absent \code{initial_state} means ground TLS.\\
+\code{param_time_evol} & $T=28,\Delta t=0.1$; $J=281$ saved times $0,0.1,\ldots,28$.\\
+\code{cutoffs} & Eq.~\eqref{eq:grid}: $M=10$ signed modes, five per direction.\\
+\code{n_max} & $N=3$.\\
+\code{truncation} & Current value \code{'full'} independently caps ten modes at 3: $d=2(4)^{10}=2{,}097{,}152$. Function default \code{full+totalcap} would give $2\binom{13}{3}=572$.\\
+\code{estimate} & Prints approximately 8.78 GiB for stored complex amplitudes and \code{feasible=False}. It does not prevent execution.\\
+\bottomrule
+\end{longtable}
+
+\subsection{Cell 3: the simulation actually requested}
+\begin{lstlisting}
+experiment = run_scattering(param_photon, param_atom,
+                            param_time_evol, cutoffs,
+                            n_max=n_max, truncation=truncation,
+                            RWA=True, progress=True)
+for name, values in experiment.observables.items():
+    print(name, values[-1])
+\end{lstlisting}
+\begin{longtable}{p{.25\textwidth}p{.65\textwidth}}
+\toprule Statement & Exact meaning / consequence\\\midrule\endfirsthead
+\toprule Statement & Exact meaning / consequence\\\midrule\endhead
+\code{run_scattering(...)} & Construct and solve with cell-2 inputs. This cell does \emph{not} test \code{estimate['feasible']}; it can begin a very large allocation.\\
+\code{RWA=True} & Override default \code{False}; this cell uses only energy-exchange transitions. It is a rotating-wave calculation despite the notebook title.\\
+\code{progress=True} & Enable progress bar, with no change in physics.\\
+\code{for name,values} & Iterate output dictionary, one metric array at a time.\\
+\code{values[-1]} & Python index $-1$ means the last \emph{time} sample, here $t=28$.\\
+\bottomrule
+\end{longtable}
+
+\subsection{Cell 4: spatial and time plots}
+\begin{lstlisting}
+if experiment is not None:
+    time = experiment.observables['time']
+    x_tab = np.linspace(-param_atom['L']/2, param_atom['L']/2,
+                        500, endpoint=False)
+    t_hit = param_atom['x_tls'] - param_photon['x_0']
+    snapshots = [0, np.argmin(np.abs(time - t_hit)), len(time)-1]
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+    for j in snapshots:
+        phi_x = experiment.one_photon_wavefunction(j, x_tab)
+        axes[0].plot(x_tab, np.abs(phi_x)**2, label=f't = {time[j]:.1f}')
+    axes[0].axvline(param_atom['x_tls'], color='black', ls=':', label='TLS')
+    axes[0].set(xlabel='x', ylabel=r'$|\phi_{1,g}(x,t)|^2$')
+    axes[0].legend()
+    for name in ('p_transmitted','p_reflected','p_excited','norm'):
+        axes[1].plot(time, experiment.observables[name], label=name)
+    axes[1].set(xlabel='t', ylabel='population', ylim=(0, 1.05))
+    axes[1].legend()
+    fig.tight_layout()
+    plt.show()
+\end{lstlisting}
+\begin{longtable}{p{.28\textwidth}p{.62\textwidth}}
+\toprule Statement & Mathematical meaning\\\midrule\endfirsthead
+\toprule Statement & Mathematical meaning\\\midrule\endhead
+\code{if experiment is not None} & Plot if a previous cell assigned an experiment; a failed previous cell can leave a stale notebook variable.\\
+\code{time} & Read solver output array $(t_j)$.\\
+\code{x_tab} & Sample 500 points on $[-L/2,L/2)$; \code{endpoint=False} avoids duplicating periodic endpoints.\\
+\code{t_hit} & $x_a-x_0=12$, rough flight time at speed $c=1$, not a computed interaction time.\\
+\code{snapshots} & Indices $0$, nearest saved time to $12$ via \code{argmin(abs(...))}, and $J-1$.\\
+\code{plt.subplots} & Allocate one figure and two axes.\\
+\code{for j}, \code{phi_x} & Compute Eq.~\eqref{eq:phi} at three chosen $t_j$.\\
+\code{axes[0].plot} & Plot $|\phi_{1,g}(x,t_j)|^2$ and formatted time label.\\
+\code{axvline}, first \code{set}, \code{legend} & Mark TLS position $x_a$; label spatial axes/curves. No new physics is calculated.\\
+\code{for name}, \code{axes[1].plot} & Plot $T_1(t_j),R_1(t_j),P_e(t_j),\mathcal N(t_j)$ from Eq.~\eqref{eq:obs}.\\
+second \code{set}, \code{legend} & Label time plot and restrict visible vertical range to $(0,1.05)$.\\
+\code{tight_layout}, \code{show} & Arrange and display; no raw data file saved.\\
+\bottomrule
+\end{longtable}
+
+\subsection{Cell 6: two truncations and three fidelities}
+\begin{lstlisting}
+schemes = ('full+totalcap', 'truncated')
+runs = {}
+for scheme in schemes:
+    estimate = resource_estimation(param_atom, param_time_evol,
+                                   cutoffs, n_max=n_max, truncation=scheme)
+    if estimate['feasible']:
+        runs[scheme] = run_scattering(param_photon, param_atom,
+                                     param_time_evol, cutoffs,
+                                     n_max=n_max, truncation=scheme)
+reference = runs.get('full+totalcap')
+if reference is not None:
+    fig, axes = plt.subplots(1, 3, figsize=(13, 3.5))
+    for scheme in ('truncated',):
+        if scheme in runs:
+            F = fidelities_over_time(runs[scheme], reference)
+            for ax, name in zip(axes, ('state', 'atom', 'photon')):
+                ax.plot(reference.times, F[name], label=scheme)
+                ax.set(xlabel='t', ylabel=f'{name} fidelity',
+                       ylim=(0, 1.05))
+                ax.set_title(name)
+            print(scheme, 'initial:', F['state'][0],
+                  'time mean:', {key: np.mean(value)
+                                for key, value in F.items()})
+    axes[0].legend()
+    fig.tight_layout()
+    plt.show()
+\end{lstlisting}
+\begin{longtable}{p{.28\textwidth}p{.62\textwidth}}
+\toprule Statement & Exact operation\\\midrule\endfirsthead
+\toprule Statement & Exact operation\\\midrule\endhead
+\code{schemes}, \code{runs} & List two finite bases; initialize name-to-experiment dictionary.\\
+\code{for scheme}, \code{estimate} & Recalculate $d,J$ for each basis with the same physical dictionaries.\\
+\code{if estimate['feasible']} & This cell \emph{does} obey the advisory threshold.\\
+\code{runs[scheme]} & Solve feasible cases. No \code{RWA} keyword is supplied, so wrapper default \code{False} applies: these runs include counter-rotating terms, unlike cell 3.\\
+\code{reference=...} & Retrieve total-cap result, or \code{None} if skipped.\\
+\code{if reference...}, \code{subplots} & Make three axes only if reference exists.\\
+\code{for scheme}, \code{if scheme in runs} & Consider each available candidate against that same finite reference.\\
+\code{F=...} & Compute all $F_\mu(t_j)$ in Eq.~\eqref{eq:fids}; requires common $k$ array and $t$ array.\\
+\code{zip(axes,...)} & Pair axis 0/1/2 with names \code{state}/\code{atom}/\code{photon}.\\
+\code{ax.plot}, \code{ax.set}, \code{ax.set_title} & Plot $F_\mu(t_j)$, label axes and use visible range $(0,1.05)$.\\
+\code{F['state'][0]} & Initial global fidelity $F_{\rm state}(0)$.\\
+\code{np.mean(value)} & Arithmetic sampled-time mean $J^{-1}\sum_{j=0}^{J-1}F_\mu(t_j)$ for each metric.\\
+\code{legend}, \code{tight_layout}, \code{show} & Display comparison; no file saved.\\
+\bottomrule
+\end{longtable}
+
+\subsection{Cell 8: coupling sweep, currently enabled}
+\begin{lstlisting}
+RUN_SWEEP = True
+if RUN_SWEEP:
+    D_values = np.geomspace(0.02, 0.45, 6)
+    sweep = {scheme: [] for scheme in ('truncated',)}
+    for D in D_values:
+        atom_here = dict(param_atom, D=float(D))
+        ref = run_scattering(param_photon, atom_here, param_time_evol,
+                             cutoffs, n_max=n_max, truncation='full+totalcap')
+        for scheme in sweep:
+            candidate = run_scattering(param_photon, atom_here,
+                                       param_time_evol, cutoffs,
+                                       n_max=n_max, truncation=scheme)
+            F = fidelities_over_time(candidate, ref)
+            sweep[scheme].append(np.mean(F['state']))
+    for scheme, values in sweep.items():
+        plt.semilogx(D_values, values, 'o-', label=scheme)
+    plt.xlabel('D')
+    plt.ylabel('time-mean full-state fidelity')
+    plt.legend()
+    plt.show()
+\end{lstlisting}
+\begin{longtable}{p{.28\textwidth}p{.62\textwidth}}
+\toprule Statement & Exact operation\\\midrule\endfirsthead
+\toprule Statement & Exact operation\\\midrule\endhead
+\code{RUN_SWEEP=True}, \code{if} & Current value enters the sweep branch. Notebook Markdown says to enable it, but it is already enabled.\\
+\code{D_values} & Six geometrically spaced $D$: equal spacing in $\log D$ between $0.02$ and $0.45$.\\
+\code{sweep} & One empty output list keyed by candidate basis.\\
+\code{for D}, \code{atom_here} & For each $D$, shallow-copy atom dictionary and replace only $D$; original \code{param_atom} remains unchanged.\\
+\code{ref} & One total-cap simulation at this $D$ and default \code{RWA=False}.\\
+\code{for scheme}, \code{candidate} & One candidate simulation per $D$: $6(1+1)=12$ solver calls total, each rebuilding a matrix.\\
+\code{F}, \code{append} & Compute full-state fidelity trajectory and append its time mean.\\
+\code{for scheme,values}, \code{semilogx} & Plot six means against logarithmic $D$ axis.\\
+\code{xlabel}, \code{ylabel}, \code{legend}, \code{show} & Label/display; no raw sweep array saved.\\
+\bottomrule
+\end{longtable}
+
+\section{A complete small-vector example}
+Take $M=2,N=1$, \code{truncated}, normalized packet
+$c=(c_0,c_1)$, and TLS spinor $\eta=(\eta_g,\eta_e)$.
+The basis constructor stores occupation tuples in order
+\begin{align*}
+\texttt{basis.states}&=[(0,0),(1,0),(0,1)],\\
+\texttt{basis.index}[(0,0)]&=0,\quad
+\texttt{basis.index}[(1,0)]=1,\quad
+\texttt{basis.index}[(0,1)]=2.
+\end{align*}
+Consequently the full ket vector has six cells:
+\[
+\begin{array}{c|cccccc}
+q&0&1&2&3&4&5\\
+\hline
+\text{ket}&\ket{0,0;g}&\ket{0,0;e}&\ket{1,0;g}&
+\ket{1,0;e}&\ket{0,1;g}&\ket{0,1;e}\\
+v_q&0&0&c_0\eta_g&c_0\eta_e&c_1\eta_g&c_1\eta_e
+\end{array}
+\]
+The \code{for m, amplitude in enumerate(packet)} loop writes
+\[
+\begin{aligned}
+m=0:\quad &i=1,\quad
+  v[2:4]\mathrel{+}=c_0(\eta_g,\eta_e),\\
+m=1:\quad &i=2,\quad
+  v[4:6]\mathrel{+}=c_1(\eta_g,\eta_e).
+\end{aligned}
+\]
+The vacuum cells remain zero because a one-photon number state has no vacuum
+component. Its norm is
+\[
+\|v\|^2
+=|c_0|^2(|\eta_g|^2+|\eta_e|^2)
+ +|c_1|^2(|\eta_g|^2+|\eta_e|^2)
+=1.
+\]
+This is the literal contents of the array after line 79 of \code{src/states.py};
+the final normalization at line 93 leaves it unchanged up to floating-point
+roundoff.
+
+\section{Imports, package markers, and files without numerical steps}
+The executable listings above start at the classes/functions. The leading
+imports select the following exact implementations:
+\begin{center}\small
+\begin{longtable}{p{.29\textwidth}p{.61\textwidth}}
+\toprule Source lines & Purpose\\\midrule\endfirsthead
+\toprule Source lines & Purpose\\\midrule\endhead
+\code{src/states.py:1--7} & Module docstring; \code{itertools.combinations_with_replacement} and \code{product} enumerate occupations; \code{math.factorial} supplies $n!$ in Eq.~\eqref{eq:coherent}; NumPy makes arrays; QuTiP wraps final ket.\\
+\code{src/hamiltonians.py:1--5} & Module docstring; NumPy makes $f_m$ and phases; QuTiP wraps $H$; SciPy \code{coo_matrix} stores triplets and \code{diags} stores $H_0$.\\
+\code{src/experiment.py:1--9} & Module docstring; \code{comb} gives binomial count, \code{pi} the momentum spacing, NumPy arrays, QuTiP solver, and imports the local basis/Hamiltonian functions.\\
+\code{src/fidelities.py:1--4} & Module docstring; NumPy computes overlaps/SVD; QuTiP computes TLS Uhlmann fidelity.\\
+\code{src/__init__.py}, \code{experiments/__init__.py} & Empty package-marker files. No numerical statements.\\
+\code{requirements.txt} & Declares NumPy, SciPy, QuTiP, Matplotlib dependency ranges; it supplies no physical parameter.\\
+\code{README.md} & Short usage overview. Its script command is currently stale because the script's example is commented out.\\
+\code{results/} & Optional CSV output location; no result is written unless \code{store_results=True}.\\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\section{What the equations certify, and what they do not}
+\begin{center}\small
+\begin{longtable}{p{.40\textwidth}p{.48\textwidth}}
+\toprule Exact finite-code identity & Scope\\\midrule\endfirsthead
+\toprule Exact finite-code identity & Scope\\\midrule\endhead
+$H=H_0+D V_1$, Eqs.~\eqref{eq:HD}--\eqref{eq:V} & Sparse projected Hamiltonian for the chosen $k$ and Fock basis.\\
+$H^\dagger=H$ for real $D,L>0,\omega_0$ & Down/up entries are conjugate; exact finite evolution is unitary. A high norm cannot establish basis convergence.\\
+Default $v_0=\sum_m c_m\ket{1_m;g}$ & A right-moving, one-photon preparation. Coherent preparation is normalized \emph{after} projection.\\
+Eq.~\eqref{eq:obs} & $T_1,R_1$ are ground-TLS, one-photon sector weights at finite time; they are not automatically asymptotic scattering coefficients.\\
+$F_{\rm photon}=(\sigma_1(G)+\sigma_2(G))^2$ & Exact field reduced-state fidelity on matching $k,t$ grids, without a field density matrix.\\
+\code{store_state=False} & Only final coefficients/observables are retained; time-dependent fidelity function requires full stored trajectories.\\
+\bottomrule
+\end{longtable}
+\end{center}
+Numerical convergence has independent axes: photon cap $N$, mode band,
+periodic length $L$, and ODE tolerances. Changing one while fixing the others
+tests that axis only. The current notebook cell 3 uses RWA and an enormous
+\code{full} basis; cells 6 and 8 use no-RWA by default. Their curves do not
+represent one single parameter regime unless those switches are aligned.
+
+\end{document}

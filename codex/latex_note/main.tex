@@ -1,0 +1,826 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=21mm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{amsmath,amssymb,mathtools,amsthm}
+\usepackage{booktabs,longtable,array,enumitem}
+\usepackage{xcolor,listings}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+\newcommand{\ket}[1]{\lvert #1\rangle}
+\newcommand{\bra}[1]{\langle #1\rvert}
+\newcommand{\braket}[2]{\langle #1\mid #2\rangle}
+\newcommand{\code}[1]{\nolinkurl{#1}}
+\newcommand{\Tr}{\operatorname{Tr}}
+\newcommand{\rank}{\operatorname{rank}}
+\newcommand{\sgn}{\operatorname{sgn}}
+\newcommand{\ii}{\mathrm i}
+\newcommand{\HH}{\mathcal H}
+\newcommand{\BB}{\mathcal B}
+\newcommand{\PP}{\mathsf P}
+\newcommand{\FF}{\mathcal F}
+\newcommand{\dd}{\mathrm d}
+\lstset{basicstyle=\ttfamily\footnotesize,numbers=left,numberstyle=\tiny\color{gray},
+ numbersep=7pt,frame=single,breaklines=true,columns=fullflexible,showstringspaces=false,
+ keepspaces=true,upquote=true}
+\emergencystretch=3em
+\title{What the metrics in \code{rabi-truncation} measure\\
+\large A source-grounded route from finite-state fidelities to photon scattering}
+\author{Technical note for \code{rabi-truncation} and \code{local_project}}
+\date{25 September 2026}
+\begin{document}
+\maketitle
+\begin{abstract}
+The principal output of \code{rabi-truncation} is agreement between finite, time-evolved state vectors, not a transmission or reflection coefficient. This note defines every Hilbert-space label, derives the three plotted coupling-sweep quantities from their source lines, tests their mathematical interpretation with explicit counterexamples, and relates state agreement to directional one-photon probabilities. It also distinguishes finite-time bare-basis projections from asymptotic scattering amplitudes in a model without the rotating-wave approximation (RWA). A finite \code{full+totalcap} calculation is called a \emph{reference calculation}, never an exact continuum solution. All source line numbers refer to the audited checkout; no files in the simulation code are changed by this note.
+\end{abstract}
+\tableofcontents
+\newpage
+
+\section{Objects, indices, and normalization: the dictionary for the entire note}
+\label{sec:dictionary}
+We use $\hbar=c=1$ in mathematical derivations unless they are explicitly restored. The code keeps both constants in \code{Config}; its defaults equal one (\code{src/utilities.py:135--137}). A photon mode is labelled by an integer $m\in\{1,\ldots,M\}$ and a \emph{signed} wavevector $k_m\in\mathbb R\setminus\{0\}$. Its free energy is $\omega_m=|k_m|$, while the sign of $k_m$ identifies propagation direction when the dispersion is $\omega=|k|$ and the mode convention is respected. The actual $M$ is \code{config.modes} \emph{after} the zero mode and any selected modes are removed (\code{src/utilities.py:162--184}). A mode label \code{'n3'} means the occupation of the \emph{third entry in this actual array}; it is not an immutable physical wavevector across configurations.
+
+\begin{center}\small
+\begin{longtable}{p{.21\textwidth}p{.69\textwidth}}
+\toprule Symbol & Definition\\\midrule\endfirsthead
+\toprule Symbol & Definition\\\midrule\endhead
+$N$ & \code{config.excitation_cap}; its constraint depends on the chosen basis. It does not count the TLS excitation in any of the three field truncations.\\
+$\mathbf n=(n_1,\ldots,n_M)$ & Field Fock occupations, $n_m\in\mathbb N_0$. The total \emph{bare field} photon number is $\nu(\mathbf n)=\sum_{m=1}^M n_m$.\\
+$s\in\{g,e\}$ & Bare TLS ground/excited label; $\epsilon_g=0$, $\epsilon_e=1$. The bare atomic transition energy is $\omega_a$ (attribute \code{config.w_atom}).\\
+$\ket{\mathbf n;s}$ & Tensor product $\ket{n_1,\ldots,n_M}\otimes\ket s$. This is a bare basis state, not an interacting scattering eigenstate.\\
+$\BB_X$ & Allowed field occupation set for $X\in\{\mathrm{truncated,total,full}\}$. Its projector in the field--TLS space is $P_X=\sum_{\mathbf n\in\BB_X,s}\ket{\mathbf n;s}\bra{\mathbf n;s}$. The auxiliary basis has one additional index $n_a$.\\
+$d_X$ & Dimension $2|\BB_X|$; the stored ket has $d_X$ complex entries.\\
+$C^X_{\mathbf n s}(t)$ & Expansion coefficient $\braket{\mathbf n;s}{\psi_X(t)}$ of one finite simulation. It is zero by extension when $\mathbf n\notin\BB_X$.\\
+$\rho^X(t)$ & Global pure-state density operator $\ket{\psi_X(t)}\bra{\psi_X(t)}$ used only as mathematical notation; the program propagates the ket.\\
+$\rho_a^X,\rho_f^X$ & Partial traces $\Tr_f\rho^X$ (a $2\times2$ TLS matrix) and $\Tr_a\rho^X$ (a field matrix).\\
+$A,B$ & Two finite simulations being compared. In the coupling sweep, $A$ is a candidate and $B$ is \code{full+totalcap}, with the same nominal coupling $g$.\\
+$j,J,t_j$ & Output-time index, number of stored kets, and actual value in \code{sim.times[j]}. This $j$ is unrelated to mode index $m$.\\
+$\Pi$ & An orthogonal projector representing a specified measurement event. Probabilities are $\bra\psi\Pi\ket\psi$, not squared state-to-state fidelities unless $\Pi$ is a rank-one projector onto the comparison state.\\
+\bottomrule
+\end{longtable}
+\end{center}
+Every physically normalized ket satisfies
+\begin{equation}
+ \ket{\psi_X(t)}=\sum_{\mathbf n\in\BB_X}\sum_{s=g,e}
+ C^X_{\mathbf n s}(t)\ket{\mathbf n;s},\qquad
+ \sum_{\mathbf n,s}|C^X_{\mathbf n s}(t)|^2=1.
+ \label{eq:ket}
+\end{equation}
+The \code{State} subclasses store adjacent $g,e$ amplitudes; hence array entries $v[2i]$ and $v[2i+1]$ are the two amplitudes for the $i$th occupation. This is the index convention used by \code{atom_density_matrix} (\code{src/states.py:232--240}). \code{Simulation.time_evolve} calls \code{qutip.sesolve} on a ket and sets \code{normalize_output=True} (\code{src/simulation.py:27--33}). Thus the solver is a pure-state calculation; a $2\times2$ density matrix later used for the TLS is a \emph{reduction} of that ket, not a global master-equation evolution. Solver output normalization masks raw norm drift; the \code{State.from_vector} wrapper normalizes each returned vector again before computing fidelities (\code{src/states.py:199--212}).
+
+\section{Which finite Hilbert spaces are compared?}
+\label{sec:bases}
+Write $\mathbf e_m$ for the occupation vector with one in slot $m$ and zero elsewhere. The four names in the audited repository correspond to
+\begin{align}
+\BB_{\rm truncated}&=\{\mathbf0\}\cup\{n\mathbf e_m:1\le m\le M,\ 1\le n\le N\},
+ &d_{\rm truncated}&=2(1+MN),\label{eq:btr}\\
+\BB_{\rm total}&=\{\mathbf n\in\mathbb N_0^M:\nu(\mathbf n)\le N\},
+ &d_{\rm total}&=2\binom{M+N}{N},\label{eq:btot}\\
+\BB_{\rm full}&=\{\mathbf n\in\mathbb N_0^M:0\le n_m\le N\ \forall m\},
+ &d_{\rm full}&=2(N+1)^M.\label{eq:bfull}
+\end{align}
+The fourth name, \code{truncated+atom}, appends an oscillator integer $n_a\in\{0,\ldots,N\}$ \emph{independently} to every $\mathbf n\in\BB_{\rm truncated}$; thus $d_{\rm aux}=2(1+MN)(N+1)$. This oscillator is distinct from the two-state TLS index $s$. The formulas follow directly from \code{src/states.py:40--124}. In the comparisons of primary interest,
+\begin{equation}
+ \BB_{\rm truncated}\subset\BB_{\rm total}\subset\BB_{\rm full}
+ \qquad(M\ge2,N\ge2).
+ \label{eq:nesting}
+\end{equation}
+The first inclusion is strict because $(1,1,0,\ldots)$ exists in the total-cap basis but not in the one-occupied-mode basis. For $M=2,N=2$ the respective field sets have $5,6,9$ elements. \code{full+totalcap} is the sweep's computational reference (\code{scripts/sweep_g_fidelity.py:43--46}); it is \emph{not} an untruncated Hilbert space, and it does not include continuum momenta.
+
+The auxiliary implementation has a particularly sharp consequence for its metric curves. In \code{HamiltonianAtom.interaction}, transitions that change $n_a$ have \code{trans_index == M}, but the bosonic factor is evaluated from the field key \code{f'n{trans_index+1}'} (\code{src/hamiltonians.py:217--230}). This key is absent in those labels, so both occupations read as zero and the matrix element receives $\sqrt{\max(0,0)}=0$. The initial preparations occupy $n_a=0$ (\code{src/states.py:312--334}). Therefore
+\begin{equation}
+ [H_{\rm aux},P_{n_a=0}]=0,\qquad
+ \ket{\psi_{\rm aux}(0)}\in\operatorname{ran}P_{n_a=0},qquad
+ \ket{\psi_{\rm aux}(t)}\in\operatorname{ran}P_{n_a=0}.
+ \label{eq:auxinvariant}
+\end{equation}
+Within this initial sector the evolution is the ordinary \code{truncated} evolution, up to basis ordering and numerical integration differences. Near-identical auxiliary and ordinary truncated fidelity curves therefore provide no independent evidence that an extra physical mode repairs the truncation.
+
+\section{The finite dynamics and the prepared packet}
+\label{sec:model}
+The three field bases use a projected Rabi-type Hamiltonian. Restoring the code's $\hbar,c$, its bare free part is
+\begin{equation}
+ H_0=\hbar c\sum_m|k_m|a_m^\dagger a_m+
+ \hbar\omega_a\ket e\bra e,
+ \label{eq:h0}
+\end{equation}
+and the interaction has matrix elements of the form
+\begin{equation}
+ V=\hbar\sum_m g\sqrt{|k_m|}
+ \bigl(e^{-\ii k_m x_a}a_m+e^{\ii k_m x_a}a_m^\dagger\bigr)
+ (\sigma^++\sigma^-),
+ \quad H_X=P_X(H_0+V)P_X.
+ \label{eq:h}
+\end{equation}
+Here $x_a$ is \code{config.x_atom}, $g$ is \code{config.g}, $\sigma^+=\ket e\bra g$, $\sigma^-=\ket g\bra e$. The placement of the phase between $a_m$ and $a_m^\dagger$ follows the matrix convention \code{H[ket,bra]} and \code{transition_sign} (\code{src/hamiltonians.py:39--88,98--155,232--255}); a rephasing of individual $a_m$ changes this convention but not probabilities. The \code{RWA=True} branch retains only $a_m\sigma^++a_m^\dagger\sigma^-$ matrix elements (\code{src/hamiltonians.py:62--78}). The audited coupling $g\sqrt{|k_m|}$ does not contain an explicit $L^{-1/2}$ factor, so a comparison across lengths must specify how $g$ scales with $L$ if a fixed continuum spectral density is intended.
+Equation~\eqref{eq:h0} matches the default $\hbar=1$. If one changes \code{config.hbar}, the \code{truncated} and auxiliary free builders add the TLS term as \code{atom_index * w_atom} without $\hbar$, whereas the \code{full} and total-cap builders multiply it by $\hbar$ (\code{src/hamiltonians.py:98--110,128--141,160--174,232--242}). Such a run would no longer compare one identical physical Hamiltonian across truncations.
+
+The nominal number-state packet is
+\begin{equation}
+ \widetilde c_m=
+ \exp\!\left[-\frac{\sigma_p^2}{2}(k_m-k_0)^2\right]
+ e^{-\ii k_m x_p},\qquad
+ c_m=\frac{\widetilde c_m}{\bigl(\sum_\ell|\widetilde c_\ell|^2\bigr)^{1/2}},
+ \quad\sigma_p>0,\ k_0,x_p\in\mathbb R.
+ \label{eq:packet}
+\end{equation}
+Here $\sigma_p,k_0,x_p$ are \code{sigma_photon}, \code{k_photon}, \code{x_photon}. This formula is \code{State.calculate_ck} (\code{src/states.py:181--185}). For \code{NumberState(1)} and initial TLS ground state, the preparation is
+\begin{equation}
+ \ket{\psi_X(0)}=\sum_{m=1}^M c_m\ket{\mathbf e_m;g}
+ \quad\text{for each basis containing all one-photon states}.
+ \label{eq:numberinitial}
+\end{equation}
+Crucially, Eq.~\eqref{eq:packet} does \emph{not} set $c_m=0$ for $k_m<0$. Its initial left-moving weight is
+\begin{equation}
+ P_{\leftarrow}^{\rm in}=\sum_{m:k_m<0}|c_m|^2.
+ \label{eq:initialleft}
+\end{equation}
+For the default $L=10\pi$, $k_0=1$, $\sigma_p=1$, and requested mode counts 16 and 32, evaluation of the \emph{default} grid formula gives respectively $M=15,31$ and $P_{\leftarrow}^{\rm in}\simeq0.07404,0.06188$. These numbers are conditional on those defaults; the committed result archives do not store a complete configuration. A raw left-moving population at late time is not automatically a reflection probability when Eq.~\eqref{eq:initialleft} is nonzero.
+
+For a product coherent input, the unprojected field state is
+\begin{equation}
+ \ket{\boldsymbol\alpha}=\bigotimes_{m=1}^M\ket{\alpha c_m},\qquad
+ \langle\mathbf n|\boldsymbol\alpha\rangle
+ =e^{-|\alpha|^2/2}\prod_m\frac{(\alpha c_m)^{n_m}}{\sqrt{n_m!}},
+ \quad\sum_m|c_m|^2=1.
+ \label{eq:coherent}
+\end{equation}
+Each basis retains the coefficients in its own set and then normalizes the projected vector (\code{src/states.py:251--305,307--358}). Thus coherent preparations in different truncations are generally \emph{different physical initial kets}, even at $g=0$.
+
+\section{Inventory: every metric family and what is actually plotted}
+\label{sec:inventory}
+\begin{center}\scriptsize
+\begin{longtable}{p{.18\textwidth}p{.27\textwidth}p{.24\textwidth}p{.20\textwidth}}
+\toprule Reported quantity & Mathematical object & Source & Can it alone yield $t(k),r(k)$?\\\midrule\endfirsthead
+\toprule Reported quantity & Mathematical object & Source & Can it alone yield $t(k),r(k)$?\\\midrule\endhead
+\code{state} & $F_{\rm state}(t_j)=|\braket{\psi_A(t_j)}{\psi_B(t_j)}|^2$ & \code{src/fidelities.py:26--53}; sweep lines 71--99 & No; it compares two full outputs for one preparation.\\
+\code{atom} & Squared Uhlmann fidelity $F_a(t_j)$ between two $2\times2$ TLS reductions & \code{scripts/sweep_g_fidelity.py:60--68} & No; it discards all field detail.\\
+\code{photon_bound} & $Q(t_j)=F_{\rm state}(t_j)/F_a(t_j)$ when $F_a>0$ & \code{scripts/sweep_g_fidelity.py:71--79} & No; it is neither a field fidelity nor a bound.\\
+\code{P_e(t)} & $\bra{\psi(t)}(I_f\otimes\ket e\bra e)\ket{\psi(t)}$ & \code{src/simulation.py:44--63}; \code{scripts/atom_evolution.py} & No; TLS population is not a directional field measurement.\\
+\code{entropy}, \code{purity} & $-\Tr\rho_a\log\rho_a$ and $\Tr\rho_a^2$ & \code{src/simulation.py:65--71}; \code{src/utilities.py:247--255} & No; they characterize TLS--field entanglement for a pure global state.\\
+\code{energy profile} & Partition of $\langle H\rangle$ by mode or bare photon count & \code{src/energy_profile.py:47--146} & No; energy contribution is not channel probability or flux.\\
+\code{cumulative fidelity} & $F_{N,N+1}(T)$ between adjacent total caps & \code{scripts/full_cumulative_fidelity.py:19--69} & No; it checks one sequence of finite models.\\
+mode selection & $F$ after embedding selected $k$ modes in the full grid & \code{src/fidelities.py:56--151}; mode-selection script & No; it checks an approximation to a reference trajectory.\\
+\bottomrule
+\end{longtable}
+\end{center}
+The coupling-sweep plot stores the \emph{sampled-time mean} of the first three quantities, not their final-time values, and no principal fidelity script computes $T$ or $R$. The exact definitions, conditions, and counterexamples follow.
+
+\section{Global state fidelity: exact meaning and the basis-alignment hazard}
+\label{sec:global}
+For normalized $\ket{\psi_A},\ket{\psi_B}$ in one common physical Hilbert space, define
+\begin{equation}
+ F_{\rm state}(A,B)
+ =|\braket{\psi_A}{\psi_B}|^2
+ =\left|\sum_{\mathbf n\in\BB_A\cap\BB_B}\sum_{s=g,e}
+ (C^A_{\mathbf n s})^*C^B_{\mathbf n s}\right|^2.
+ \label{eq:fstate}
+\end{equation}
+The second equality extends both states by zero outside their finite supports. The \emph{complex} overlap is summed before taking its modulus squared: replacing it by $\sum|C^A|^2|C^B|^2$ would erase interference phases. The value is between zero and one by Cauchy--Schwarz. It equals one if and only if the two normalized kets differ by one global phase. At a fixed time, it is also the probability that a projective test for \emph{the entire reference ket} accepts the candidate ket. It is not the probability of an outgoing photon on either side.
+
+The implementation selects a basis class with \code{common_basis}, loops over its labels, accumulates the complex inner product, and squares its modulus (\code{src/fidelities.py:8--53}):
+\begin{lstlisting}
+common = common_basis(state1, state2)
+for basis_element in ref.all_states():
+    fidelity += np.conj(state1[basis_element]) * state2[basis_element]
+fidelity = np.abs(fidelity) ** 2
+\end{lstlisting}
+For \code{truncated} against \code{full+totalcap} on an identical grid, the enumerated set is $\BB_{\rm truncated}=\BB_A\cap\BB_B$, so Eq.~\eqref{eq:fstate} is correct. For \code{truncated+atom} against \code{full+totalcap}, the code's common \code{StateTruncated} enumeration corresponds to $n_a=0$; this is sufficient for the prepared invariant sector of Eq.~\eqref{eq:auxinvariant}.
+
+The word ``universal'' in the \code{common_basis} docstring is too strong. Whenever the types differ, it chooses \code{StateTruncated} (\code{src/fidelities.py:16--24}). In particular,
+\begin{equation}
+ \BB_{\rm full}\cap\BB_{\rm total}=\BB_{\rm total}
+ \supsetneq\BB_{\rm truncated}.
+\end{equation}
+Set $M=2,N=2$ and let both states be the \emph{same} ket $\ket{1,1;g}$, one represented as \code{StateFull}, the other as \code{StateTotalCap}. The physical answer is $F_{\rm state}=1$. The actual function iterates only vacuum and one-occupied-mode labels, finds zero overlap there, and returns $0$. A direct small-grid probe of the audited checkout produced exactly this $1\mapsto0$ discrepancy. Hence the cross-type routine is valid only when its enumerated labels cover the true support intersection, or when all omitted common amplitudes vanish. The primary truncated-versus-total-cap sweeps meet that condition; an arbitrary heterogeneous comparison does not.
+
+There is a second, independent requirement: mode index $m$ must name the same $k_m$ in both states. Raw \code{fidelity_statevector} does not check this. For selected grids, \code{physical_mode_map} aligns modes by $k$ using \code{np.isclose}, and \code{embed_in_grid} inserts vacuum in missing modes (\code{src/fidelities.py:56--115}); \code{fidelity_to_reference} uses that embedding before Eq.~\eqref{eq:fstate} (lines 138--152). A comparison at unlike physical $k$ arrays without this map has no well-defined interpretation as an overlap of the same field modes. The embedding itself is isometric only if all selected modes are distinct matches and the basis label mapping is injective, as intended by the subset construction.
+
+\subsection{What a high or low state fidelity can say about scattering}
+At one \emph{outgoing} time, high $F_{\rm state}$ is strong evidence that two simulations agree on \emph{all} bounded measurement probabilities, including any identically defined transmission projector; Section~\ref{sec:bounds} gives the sharp quantitative inequality. Low $F_{\rm state}$ does not identify which measurement differs. For instance, with two orthogonal right-moving one-photon modes,
+\begin{equation}
+ \ket{A}=\frac{\ket{k_1;g}+\ket{k_2;g}}{\sqrt2},\qquad
+ \ket{B}=\frac{\ket{k_1;g}-\ket{k_2;g}}{\sqrt2},
+ \qquad F_{\rm state}=0,\quad T_A=T_B=1,\quad R_A=R_B=0.
+ \label{eq:orthoright}
+\end{equation}
+The relative spectral phase differs although integrated directional probabilities agree. Conversely, $F_{\rm state}$ compares two numerical answers, not either answer with an unknown exact physical $S$ matrix. Even $F_{\rm state}=1$ only establishes that those two finite calculations coincide for the specified input and time.
+
+\section{Reduced TLS matrix, excitation, purity, and entropy}
+\label{sec:tls}
+Write $\ket{\psi}=\ket{\phi_g}\ket g+\ket{\phi_e}\ket e$, where $\ket{\phi_s}=\sum_{\mathbf n}C_{\mathbf n s}\ket{\mathbf n}$ may be unnormalized. Tracing over the field gives the explicitly defined $2\times2$ matrix
+\begin{equation}
+ \rho_a=\Tr_f\ket\psi\bra\psi
+ =\begin{pmatrix}
+ \sum_{\mathbf n}|C_{\mathbf n g}|^2&
+ \sum_{\mathbf n}C_{\mathbf n g}C_{\mathbf n e}^*\\
+ \sum_{\mathbf n}C_{\mathbf n e}C_{\mathbf n g}^*&
+ \sum_{\mathbf n}|C_{\mathbf n e}|^2
+ \end{pmatrix},\qquad \Tr\rho_a=1.
+ \label{eq:rhoa}
+\end{equation}
+This is precisely the even/odd slicing and dot products in \code{src/states.py:228--240}. The off-diagonal entry is a coherent overlap between two \emph{field} vectors. Its absence may result from entanglement, not from a thermal or dissipative environment.
+
+The bare TLS excitation probability used by \code{compute_excited_probability} is
+\begin{equation}
+ P_e(t)=(\rho_a(t))_{ee}=\sum_{\mathbf n}|C_{\mathbf n e}(t)|^2
+ =\bra{\psi(t)}(I_f\otimes\ket e\bra e)\ket{\psi(t)}.
+ \label{eq:pe}
+\end{equation}
+The function returns the whole series when \code{t=None}, the last stored value when \code{t=-1}, or an index chosen as \code{int(t/config.dt)} otherwise (\code{src/simulation.py:44--63}). Because the actual \code{sim.times} spacing is generally not \code{config.dt}, the numeric \code{t} branch is an \emph{indexing approximation}; it should not be read as an exact interpolation at the requested physical time. The \code{atom_evolution.py} figure plots $\Re P_e(t_j)$ (\code{scripts/atom_evolution.py:93--105}).
+
+For eigenvalues $\lambda_1,\lambda_2\ge0$ of $\rho_a$ with $\lambda_1+\lambda_2=1$, the code's optional diagnostics are
+\begin{equation}
+ \gamma_a=\Tr\rho_a^2=\lambda_1^2+\lambda_2^2
+ =1-2\det\rho_a,\qquad
+ S_a=-\Tr(\rho_a\log\rho_a)=-\sum_{r=1}^2\lambda_r\log\lambda_r.
+ \label{eq:ent}
+\end{equation}
+Thus $1/2\le\gamma_a\le1$, $0\le S_a\le\log2$ for normalized pure global kets. Example:
+\begin{equation}
+ \ket{\psi}=\frac{\ket{\mathbf0;g}+\ket{\mathbf e_1;e}}{\sqrt2}
+ \quad\Longrightarrow\quad
+ \rho_a=\frac{I_2}{2},\ \gamma_a=\frac12,\ S_a=\log2,
+\end{equation}
+although $\rho=\ket\psi\bra\psi$ is pure and evolves unitarily. The entropy is an entanglement measure of the TLS versus \emph{all} retained field degrees of freedom for a pure global ket; it does not encode which side an outgoing photon occupies.
+
+\section{TLS fidelity: a precisely defined but deliberately coarse comparison}
+\label{sec:atomfidelity}
+For two TLS matrices $\rho_a^A,\rho_a^B$, define the \emph{root} Uhlmann fidelity
+\begin{equation}
+ f_a=\Tr\sqrt{\sqrt{\rho_a^A}\,\rho_a^B\,\sqrt{\rho_a^A}},
+ \qquad F_a=f_a^2.
+ \label{eq:fa}
+\end{equation}
+The sweep calls \code{qutip.fidelity(rho1,rho2)} and squares its result, so its \code{atom} array contains $F_a$, not $f_a$ (\code{scripts/sweep_g_fidelity.py:60--68}). This convention makes $F_a=|\braket{a}{b}|^2$ when the TLS reductions are pure kets $\ket a,\ket b$.
+
+For \emph{any} two $2\times2$ density matrices, Eq.~\eqref{eq:fa} has an elementary closed form:
+\begin{equation}
+ F_a=\Tr(\rho_a^A\rho_a^B)
+ +2\sqrt{\det\rho_a^A\det\rho_a^B}.
+ \label{eq:qubitfidelity}
+\end{equation}
+To verify it, set $X=\sqrt{\rho_a^A}\rho_a^B\sqrt{\rho_a^A}$ with eigenvalues $\mu_\pm$. Then $(\Tr\sqrt X)^2=\mu_++\mu_-+2\sqrt{\mu_+\mu_-}$, while $\Tr X=\Tr(\rho_a^A\rho_a^B)$ and $\det X=\det\rho_a^A\det\rho_a^B$. This derivation also fixes the square convention without relying on a library name.
+
+A basic information-loss example is
+\begin{equation}
+ \begin{aligned}
+ \ket A&=\ket{1_{k>0};g},\qquad \ket B=\ket{1_{k<0};g},\\
+ \rho_a^A&=\rho_a^B=\ket g\bra g,\quad F_a=1,\quad F_{\rm state}=0,\\
+ (T_A,R_A)&=(1,0),\qquad (T_B,R_B)=(0,1).
+ \end{aligned}
+ \label{eq:atomblind}
+\end{equation}
+All TLS-only observables, including $P_e$, purity, and entropy, agree perfectly, yet the scattering direction is opposite. Thus a high \code{atom} curve is compatible with a wrong reflection coefficient. It does bound differences in \emph{TLS} measurement probabilities, as shown in Section~\ref{sec:bounds}.
+
+\section[The plotted photon bound: quotient, not photon fidelity]{The plotted \code{photon_bound}: quotient, not photon fidelity}
+\label{sec:ratio}
+The sweep constructs three time series (\code{scripts/sweep_g_fidelity.py:71--79}):
+\begin{align}
+ F_s(j)&=F_{\rm state}(\psi_A(t_j),\psi_B(t_j)),\notag\\
+ F_a(j)&=F_a(\rho_a^A(t_j),\rho_a^B(t_j)),\notag\\
+ Q(j)&=\begin{cases}F_s(j)/F_a(j),&F_a(j)>0,\\\mathrm{NaN},&F_a(j)=0.\end{cases}
+ \label{eq:ratio}
+\end{align}
+The dictionary key and plot filename \code{photon_bound} refer to $Q$. Neither the formula nor the code computes the field reduced-state fidelity $F_f$ defined in Section~\ref{sec:field}. \code{np.where} handles a zero denominator by storing \code{NaN}; a later \code{np.nanmean} omits those times. In exact arithmetic, monotonicity of fidelity under the partial trace implies $F_s\le F_a$, so $0\le Q\le1$ when defined. This inequality makes $Q$ look like a fidelity, but does not make it one.
+
+There is one useful special case. If \emph{both} states factorize as $\ket{\phi_A}\ket{a_A}$ and $\ket{\phi_B}\ket{a_B}$, then
+\begin{equation}
+ F_s=|\braket{\phi_A}{\phi_B}|^2|\braket{a_A}{a_B}|^2
+ =F_fF_a,
+ \qquad Q=F_f\quad\text{when }F_a>0.
+ \label{eq:productcase}
+\end{equation}
+Once the TLS and field are entangled in either calculation, the factorization of the \emph{overlap} does not follow from the factorization of a Hilbert space. Dividing by $F_a$ is not a partial trace and is not a conditional probability of transmission.
+
+Two normalized counterexamples show that $Q$ is neither a lower nor an upper bound on $F_f$. All kets below live in one two-dimensional field space $\operatorname{span}\{\ket0,\ket1\}$ and one TLS space $\operatorname{span}\{\ket g,\ket e\}$.
+\begin{enumerate}[leftmargin=*,label=(\alph*)]
+\item Take $\ket A=(\ket{0;g}+\ket{1;e})/\sqrt2$ and $\ket B=(\ket{0;g}-\ket{1;e})/\sqrt2$. Orthogonality gives $F_s=0$. Both reductions equal $I_2/2$, so $F_a=F_f=1$. Thus $Q=0<F_f$.
+\item Take $\ket A=\ket{0;g}$ and $\ket B=\tfrac12\ket{0;g}+\tfrac12\ket{0;e}+2^{-1/2}\ket{1;e}$. The three terms of $B$ are orthogonal and their squared norms sum to one. Here $F_s=1/4$. The $g$ probability in $B$ is $1/4$, so the pure-versus-mixed formula gives $F_a=1/4$. The field-$0$ probability in $B$ is $1/2$, so $F_f=1/2$. Therefore $Q=1>F_f$.
+\end{enumerate}
+No universal ordering between $Q$ and $F_f$ exists. In particular, the word ``bound'' in a caption or filename is not supported by the mathematics of Eq.~\eqref{eq:ratio}. A further subtlety is that the plotted quantity is $\overline Q$, not $\overline F_s/\overline F_a$; these are generally different even when all denominators are positive.
+
+\section{The exact field fidelity that could be computed from the existing kets}
+\label{sec:field}
+The field reduced state is
+\begin{equation}
+ \rho_f^X=\Tr_a\ket{\psi_X}\bra{\psi_X}
+ =\ket{\phi_g^X}\bra{\phi_g^X}+\ket{\phi_e^X}\bra{\phi_e^X},
+ \qquad \rank\rho_f^X\le2.
+ \label{eq:rhof}
+\end{equation}
+\code{State.photon_density_matrix} explicitly allocates this field matrix from the two even/odd coefficient vectors (\code{src/states.py:217--226}), but the coupling sweep does not call it. Its dimension can be large even though its rank is at most two.
+
+After embedding both finite states into the \emph{same} field mode grid, define a $2\times2$ cross Gram matrix with TLS indices $s,s'\in\{g,e\}$:
+\begin{equation}
+ G_{ss'}=\braket{\phi_s^A}{\phi_{s'}^B}
+ =\sum_{\mathbf n\in\BB_A\cap\BB_B}
+ (C^A_{\mathbf n s})^*C^B_{\mathbf n s'}.
+ \label{eq:gram}
+\end{equation}
+Then the \emph{exact squared Uhlmann field fidelity} is
+\begin{equation}
+ F_f=\left(\Tr\sqrt{\sqrt{\rho_f^A}\rho_f^B\sqrt{\rho_f^A}}\right)^2
+ =\|G\|_1^2=(\sigma_1(G)+\sigma_2(G))^2,
+ \label{eq:fieldfidelity}
+\end{equation}
+where $\sigma_1,\sigma_2$ are the nonnegative singular values and $\|G\|_1$ is their sum. For a derivation, form coefficient maps $C_X:\mathbb C^2\to\HH_f$ with columns $\ket{\phi_g^X},\ket{\phi_e^X}$. Then $\rho_f^X=C_XC_X^\dagger$ and $G=C_A^\dagger C_B$. Polar decomposition of $C_A,C_B$, or the nonzero singular-value identity for $C_A C_A^\dagger$ and $C_A^\dagger C_A$, reduces the trace norm in the first expression to $\|C_A^\dagger C_B\|_1$. Thus a $2\times2$ singular-value decomposition suffices: a dense field density matrix is not mathematically required. This is the computation implemented in the independent \code{codex/code/src/fidelities.py:7--44}, although that prototype is separate from the audited repository.
+
+The exact inequalities for properly aligned and normalized global states are
+\begin{equation}
+ 0\le F_s\le F_a\le1,\qquad 0\le F_s\le F_f\le1.
+ \label{eq:monotone}
+\end{equation}
+They express the fact that discarding degrees of freedom cannot make two states \emph{more distinguishable} by fidelity. There is no universal ordering between $F_a$ and $F_f$. Equation~\eqref{eq:fieldfidelity} compares \emph{entire field states}, including vacuum, left/right components, spectral shape, multiphoton components and their coherence. It is therefore closer to a field question than $F_a$, but it is still a comparison of two calculations, not the physical transmission or reflection of either one.
+
+\section{The temporal statistic on the coupling-sweep plots}
+\label{sec:timeaverage}
+The solver stores
+\begin{equation}
+ J=\operatorname{int}(T/\delta),\qquad
+ t_j=\frac{jT}{J-1},\quad j=0,\ldots,J-1,
+ \quad T>0,\ \delta>0,
+ \label{eq:times}
+\end{equation}
+for $J\ge2$, where $T$ is \code{config.t} and $\delta$ is \code{config.dt}, because the source is \code{np.linspace(0,config.t,int(config.t/config.dt))} (\code{src/simulation.py:27--33}). The actual spacing is $\Delta t_{\rm out}=T/(J-1)$, generally \emph{not} $\delta$. For example $T=10,\delta=0.1$ gives $J=100$ and $\Delta t_{\rm out}=10/99$. Here $\delta$ determines the requested output \emph{count}; the adaptive BDF solver still chooses internal integration steps independently. The fidelity calculations pair states by their list order (\code{zip}), not by checking equality of physical time arrays (\code{scripts/sweep_g_fidelity.py:71--79}). In the sweep the configurations share $T,\delta$, so that pairing is aligned.
+
+For each coupling $g_i$ and candidate scheme $X$, the stored point is
+\begin{equation}
+ \overline F_s(g_i;X)=\frac1J\sum_{j=0}^{J-1}F_s^{X,\rm ref}(t_j;g_i),\qquad
+ \overline F_a(g_i;X)=\frac1J\sum_jF_a^{X,\rm ref}(t_j;g_i),
+ \label{eq:means}\end{equation}
+\begin{equation}
+ \overline Q(g_i;X)=\frac1{|I_i|}\sum_{j\in I_i}
+ \frac{F_s^{X,\rm ref}(t_j;g_i)}{F_a^{X,\rm ref}(t_j;g_i)},
+ \quad I_i=\{j:F_a^{X,\rm ref}(t_j;g_i)>0\}.
+ \label{eq:qmean}
+\end{equation}
+These equations are \code{np.mean} and \code{np.nanmean} in \code{scripts/sweep_g_fidelity.py:81--99}. Equal weights are assigned to all saved times, including endpoints. They approximate a time integral only when $J$ is sufficiently large for the variation being studied, and they deliberately include the incoming and interacting stages. They are not a fidelity of a time-averaged state and not an outgoing-time observable. A large $\overline F_s$ does not ensure a large $F_s(T)$: $F_s(t_j)=1$ for $J-1$ samples and $F_s(t_{J-1})=0$ still gives $\overline F_s=1-1/J$.
+
+\subsection{Why coherent curves can start below one at zero coupling}
+Let $A=|\alpha|^2$ and $p_m=|c_m|^2$, so $\sum_mp_m=1$. The unprojected coherent state's squared norm in the total-cap basis is the Poisson cumulative probability
+\begin{equation}
+ Z_{\rm total}=\|P_{\rm total}\ket{\boldsymbol\alpha}\|^2
+ =e^{-A}\sum_{r=0}^{N}\frac{A^r}{r!}.
+ \label{eq:ztotal}
+\end{equation}
+The one-occupied-mode basis retains vacuum and occupations $n\mathbf e_m$ only, so
+\begin{equation}
+ Z_{\rm truncated}=e^{-A}\left[1+
+ \sum_{m=1}^M\sum_{n=1}^N\frac{(Ap_m)^n}{n!}\right].
+ \label{eq:ztrunc}
+\end{equation}
+Since $P_{\rm truncated}P_{\rm total}=P_{\rm truncated}$, the overlap of the \emph{separately normalized} preparations is
+\begin{equation}
+ F_s(0)=\frac{Z_{\rm truncated}}{Z_{\rm total}}.
+ \label{eq:coherentinitialF}
+\end{equation}
+For $g=0$, both projected free Hamiltonians act identically on their common occupation states and preserve these subspaces, so this initial discrepancy persists at every time: the nonunit value is a preparation/projection effect, not an interaction-induced scattering error. For an initial \code{NumberState(1)} the state lies in both bases, and $F_s(0)=1$. For a coherent state, Eq.~\eqref{eq:coherentinitialF} can be substantially below one even at $g\to0$. That statement is directly relevant to the committed coherent sweeps.
+
+\subsection{What the committed numeric archives establish}
+The four readable \code{results/results*/fidelity_vs_g.npz} files each contain 50 couplings from $10^{-5}$ to $0.2$ and six arrays: $\overline F_s,\overline F_a,\overline Q$ for each of \code{truncated} and \code{truncated+atom}. The following are direct values read from the \code{truncated} arrays; the adjacent auxiliary arrays agree to the shown precision. ``First'' and ``last'' denote archive order along $g$, not time:
+\begin{center}\small
+\begin{tabular}{p{.30\textwidth}ccc}
+\toprule Archive & $\overline F_s$ first $\to$ last & $\overline F_a$ first $\to$ last & $\overline Q$ first $\to$ last\\\midrule
+\code{results_16} & $1.000000\to0.647275$ & $1.000000\to0.937931$ & $1.000000\to0.688626$\\
+\code{results_32} & $1.000000\to0.557383$ & $1.000000\to0.870746$ & $1.000000\to0.638128$\\
+\code{results_coherent_16} & $0.763935\to0.396654$ & $1.000000\to0.984470$ & $0.763935\to0.402276$\\
+\code{results_coherent_32} & $0.765522\to0.158069$ & $1.000000\to0.974237$ & $0.765522\to0.161630$\\
+\bottomrule
+\end{tabular}
+\end{center}
+These are finite-model state-agreement data. The archives contain the $g$ axis but no full configuration, signed $k$ list, time traces or outgoing channel projections. The filenames suggest number versus coherent preparations and requested mode counts, but those suggestions do not prove the exact command lines or solver settings used to generate them. In the coherent archives, the small-$g$ state-fidelity deficit is consistent with Eq.~\eqref{eq:coherentinitialF}; the TLS fidelity near one is consistent with Eq.~\eqref{eq:atomblind}'s warning that the TLS can remain almost unchanged while field states differ. None of these six columns is a measured $T(k)$, $R(k)$ or complex scattering amplitude.
+
+\section{Two further comparisons: cap convergence and mode selection}
+\label{sec:otherfidelities}
+\subsection{Adjacent total-photon caps}
+The script \code{scripts/full_cumulative_fidelity.py:19--69} independently solves the \code{full+totalcap} model at $N=1,\ldots,N_{\max}$, takes each final stored ket, and plots
+\begin{equation}
+ F_{N,N+1}(T)=\left|\braket{\psi_{N}(T)}{\psi_{N+1}(T)}\right|^2,
+ \quad \ket{\psi_N(T)}\in\operatorname{ran}P_N
+ \subset\operatorname{ran}P_{N+1}.
+ \label{eq:adjacent}
+\end{equation}
+The expression uses the smaller basis labels for the overlap; that is correct because $P_NP_{N+1}=P_N$. But the script's \emph{coherent} initial preparations are separately projected and normalized. Consequently $F_{N,N+1}(0)$ can already be less than one, and final discrepancy contains both initial-projection and dynamical-cutoff contributions. Even a sequence with $F_{N,N+1}(T)\to1$ at several accessible $N$ is evidence only of adjacent-cap stability at that fixed $M,L,T,g$ and that chosen input. It is neither a bound on error versus the infinite-cap limit without a summable tail estimate nor evidence of convergence in the momentum discretization. The script catches exceptions and stops the loop, so missing larger-$N$ points are computational absences, not fidelity values.
+
+A useful exact decomposition in the common $(N+1)$-cap space is
+\begin{align}
+\ket{\psi_N(T)}-\ket{\psi_{N+1}(T)}
+={}&U_N(T)\bigl[\ket{\psi_N(0)}-P_N\ket{\psi_{N+1}(0)}\bigr]\notag\\
+&+\bigl[U_N(T)P_N-P_NU_{N+1}(T)\bigr]\ket{\psi_{N+1}(0)}\notag\\
+&-(I-P_N)U_{N+1}(T)\ket{\psi_{N+1}(0)}.
+\label{eq:decomp}
+\end{align}
+Here $U_N=e^{-\ii H_NT}$ acts on $\operatorname{ran}P_N$; $U_{N+1}$ acts on the larger space. The three lines are, respectively, an initial mismatch \emph{within} the smaller basis, a difference of projected dynamics within that basis, and amplitude outside it. At $T=0$ the middle line vanishes, while the last line is the initial omitted tail. One cannot attribute final infidelity solely to altered dynamics without measuring the preparation and outside-sector contributions.
+
+\subsection{Selected momentum modes}
+For selected set $K_{\rm sel}\subset K_{\rm ref}$, \code{physical_mode_map} computes an index injection $\iota$ satisfying $k_j^{\rm sel}\simeq k_{\iota(j)}^{\rm ref}$ (\code{src/fidelities.py:56--79}). The field embedding $J_\iota$ maps
+\begin{equation}
+ J_\iota\ket{n_1,\ldots,n_{M_{\rm sel}}}
+ =\ket{N_1,\ldots,N_{M_{\rm ref}}},\qquad
+ N_{\iota(j)}=n_j,\quad N_{m\notin\operatorname{im}\iota}=0.
+ \label{eq:embedding}
+\end{equation}
+It preserves norm when the mapping is one-to-one. \code{embed_in_grid} performs this relabelling, and \code{fidelity_to_reference} then calls the global overlap (\code{src/fidelities.py:82--151}). The \code{compare_mode_selection.py} sweep and heatmaps plot a time mean of this fidelity against the single unselected \code{full+totalcap} reference (\code{scripts/compare_mode_selection.py:75--121,150--169}). They vary both occupation restrictions and retained momenta, and the heatmaps vary two window widths. Their colors represent \emph{state agreement}, not transmitted intensity; their ``ground truth'' is the finite reference named in code.
+
+For a one-photon packet of Eq.~\eqref{eq:numberinitial}, simply projecting to selected modes and normalizing changes the initial state. Define $p_{\rm keep}=\sum_{m:k_m\in K_{\rm sel}}|c_m|^2$. If the selected preparation uses the same unnormalized envelope restricted to $K_{\rm sel}$, then
+\begin{equation}
+ \ket{\psi_{\rm sel}(0)}
+ =\frac1{\sqrt{p_{\rm keep}}}\sum_{k_m\in K_{\rm sel}}c_m\ket{1_m;g},
+ \qquad F_s(0)=p_{\rm keep}.
+ \label{eq:modeinitial}
+\end{equation}
+A fidelity deficit at time zero therefore quantifies a known discarded \emph{input} fraction before any TLS scattering. For coherent states, omitted modes initially carry independent coherent amplitudes; the untruncated overlap with their vacuum is $\exp[-\sum_{m\notin K_{\rm sel}}|\alpha c_m|^2]$ after squaring, with additional changes from finite Fock projection. Reporting $F_s(0)$ or $p_{\rm keep}$ is necessary to separate this preparation effect from mode-selection dynamics.
+
+\section{Energy diagnostics are not directional photon probabilities}
+\label{sec:energy}
+The repository adds two exact decompositions of the \emph{expectation} $E(t)=\bra{\psi(t)}H\ket{\psi(t)}$ (\code{src/energy_profile.py:47--146}). Let $q$ enumerate all TLS-resolved basis cells, let $\psi_q$ be the ket component, let $\nu_q$ be the field photon number of cell $q$, and let $P_\nu=\sum_{q:\nu_q=\nu}\ket q\bra q$. The excitation-bin quantity is
+\begin{equation}
+ E_\nu(t)=\sum_{q:\nu_q=\nu}\Re\bigl[\psi_q^*(H\psi)_q\bigr]
+ =\Re\bra\psi P_\nu H\ket\psi
+ =\frac12\bra\psi\{P_\nu,H\}\ket\psi,
+ \qquad\sum_\nu E_\nu=\bra\psi H\ket\psi.
+ \label{eq:enu}
+\end{equation}
+This is \code{np.real(np.conj(psi)*(H@psi))} followed by \code{np.bincount} (\code{src/energy_profile.py:130--137}). The bin label $\nu$ omits the TLS excitation but the energy assigned to that bin includes the TLS and interaction terms of those basis cells. Since $[P_\nu,H]\ne0$ without RWA, $E_\nu$ is an energy partition, not the energy of an independently conserved photon-number sector. It can be negative. By contrast, the photon-number \emph{probability}
+\begin{equation}
+ p_\nu(t)=\bra\psi P_\nu\ket\psi
+ =\sum_{q:\nu_q=\nu}|\psi_q(t)|^2\ge0,
+ \qquad\sum_\nu p_\nu=1,
+ \label{eq:pnu}
+\end{equation}
+is a distinct object and is not the displayed $E_\nu$.
+
+The mode partition is
+\begin{equation}
+ E_m(t)=\hbar c|k_m|\langle n_m\rangle_t+\langle H_{{\rm int},m}\rangle_t,
+ \quad E_{\rm atom}(t)=\langle H_{\rm atom,diag}+H_{{\rm int,atom}}\rangle_t,
+ \quad E_{\rm atom}+\sum_mE_m=\langle H\rangle_t.
+ \label{eq:emode}
+\end{equation}
+Here $H_{{\rm int},m}$ receives off-diagonal matrix elements that change field mode $m$ (\code{src/energy_profile.py:86--114,119--128}). The atom bin collects the remaining diagonal energy and any off-diagonal term not attributed to a field mode. This partition is internally checkable by its sum but is not unique as a \emph{local energy density}; an interaction term's attribution is a convention. Its $k_m$ axis is signed, but $E_m$ includes interaction energy and is not a photon count, an energy current through a detector, or $|t(k_m)|^2$. The GIF and heatmap only animate or display these values (\code{scripts/energy_profile.py:105--219}). Exact constancy of $\langle H\rangle$ checks finite closed dynamics; it does not establish that a wavepacket has scattered or escaped the TLS.
+
+\section{The target observable: a scattering matrix, not a fidelity}
+\label{sec:smatrix}
+\subsection{Asymptotic channel definition}
+A scattering matrix maps \emph{incoming channel amplitudes} to \emph{outgoing channel amplitudes}. Its definition requires a channel Hilbert space $\HH_{\rm ch}$, a channel Hamiltonian $H_{\rm ch}$, and an injection $J:\HH_{\rm ch}\to\HH$ representing well-separated free photons with the scatterer in an appropriate stationary state. If the wave operators exist, set
+\begin{equation}
+ W_{\rm in}=\mathrm{s}\!\!\lim_{t\to-\infty}e^{\ii Ht}J e^{-\ii H_{\rm ch}t},\qquad
+ W_{\rm out}=\mathrm{s}\!\!\lim_{t\to+\infty}e^{\ii Ht}J e^{-\ii H_{\rm ch}t},
+ \qquad S=W_{\rm out}^{\dagger}W_{\rm in}.
+ \label{eq:moller}
+\end{equation}
+The \emph{strong limit} means convergence on each channel vector in norm. Equation~\eqref{eq:moller} fixes the in/out convention; $S$ is an operator, not a single probability. In a finite periodic box with a discrete spectrum, persistent recurrences generally preclude a literal $t\to\infty$ scattering limit. A finite simulation can approximate a scattering experiment in a time window after the outgoing packet separates from the TLS and before it wraps around the box, followed by checks as $L$, mode bandwidth, and Fock cap change.
+
+Without RWA, the bare product $\ket{\mathbf0;g}$ is generally \emph{not} an eigenstate of $H$ because $a_m^\dagger\sigma^+\ket{\mathbf0;g}\ne0$. The stationary scatterer for an exact asymptotic channel is a \emph{dressed} ground state $\ket G$ of the interacting Hamiltonian, with its localized photon cloud, rather than the bare TLS ground label by itself. Formally, an elastic one-photon input channel is a distant incoming photon on $\ket G$, and an elastic output is a distant outgoing photon with the scatterer back in $\ket G$. At strong coupling, possible bound-state or inelastic channels must be included explicitly; see the primary research sources at the end of the note. The finite bare-basis coefficient $C_{\mathbf e_m,g}$ is therefore an easily computed \emph{proxy} for an elastic channel amplitude, not a complete non-RWA asymptotic definition.
+
+There is a precise symmetry that helps categorize channels. Define $\sigma_z=\ket e\bra e-\ket g\bra g$ and $\Pi=\sigma_z(-1)^{\hat N_f}$, $\hat N_f=\sum_m a_m^\dagger a_m$. The Rabi interaction flips the TLS and changes $\hat N_f$ by one, so $[H,\Pi]=0$ even though $[H,\hat N_f+\ket e\bra e]\ne0$. A bare $\ket{1_m;g}$ state and a bare three-photon $\ket{3\text{ photons};g}$ state have the same parity. Thus a one-to-three-photon channel is not excluded by parity; whether it is \emph{open} depends on total energy, dispersion, band edges and the dressed spectrum. A bare one-photon probability need not exhaust asymptotic probability in a no-RWA calculation.
+
+\subsection{Complex transmission and reflection amplitudes}
+For a localized, stationary scatterer with asymptotic translation-invariant waveguide channels and linear even dispersion $\omega(k)=|k|$, let $\ket{k;G}\in\HH_{\rm ch}$ label a signed-momentum one-photon channel with the scatterer in its ground state. For incident $k>0$ and signed outgoing $k'\ne0$, one elastic $S$-matrix convention is
+\begin{equation}
+ \bra{k';G}S\ket{k;G}
+ =t(k)\,\delta(k'-k)+r(k)\,\delta(k'+k),
+ \qquad k>0,\quad k'\in\mathbb R\setminus\{0\}.
+ \label{eq:tramp}
+\end{equation}
+Here $t(k),r(k)\in\mathbb C$ are \emph{amplitudes}. The delta factors state energy conservation and the two elastic directions; if a different continuum normalization or dispersion is used, density-of-states factors must be included consistently. In a purely elastic two-channel situation, unitarity gives $|t(k)|^2+|r(k)|^2=1$. If other asymptotic channels are open, it gives instead
+\begin{equation}
+ |t(k)|^2+|r(k)|^2+\sum_{\chi\in\text{other channels}}P_\chi(k)=1
+ \label{eq:unitaritychannels}
+\end{equation}
+for unit incoming flux, with an integral in the sum when final energies are continuous. Equation~\eqref{eq:unitaritychannels} is not the same as a finite-time identity involving the bare $P_e(t)$.
+
+For normalized incoming spectral envelope $f(k)$ supported on $k>0$, the elastic outgoing amplitudes are, in the diagonal elastic approximation,
+\begin{equation}
+ f_{\to}^{\rm out}(k)=t(k)f(k),\qquad
+ f_{\leftarrow}^{\rm out}(-k)=r(k)f(k),\qquad k>0.
+ \label{eq:envelopes}
+\end{equation}
+Consequently the integrated elastic probabilities are
+\begin{equation}
+ T_{\rm el}[f]=\int_0^\infty |f(k)|^2|t(k)|^2\,\dd k,
+ \qquad R_{\rm el}[f]=\int_0^\infty |f(k)|^2|r(k)|^2\,\dd k.
+ \label{eq:packetprob}
+\end{equation}
+A wavepacket experiment measures these \emph{spectral averages}, not $t(k_0)$ and $r(k_0)$ automatically. The narrowband approximation $T\simeq|t(k_0)|^2$, $R\simeq|r(k_0)|^2$ requires both $f$ concentrated near $k_0$ and $t,r$ slowly varying across its width. Even exact knowledge of $T_{\rm el}$ and $R_{\rm el}$ loses the phases of $t$ and $r$; those phases control interference and time delay. Reconstructing an $S$-matrix operator requires enough distinct incoming states or a direct channel-resolved resolvent calculation, not one integrated curve.
+
+\section[What the local project calls transmitted and reflected]{What \code{local_project} calls transmitted and reflected}
+\label{sec:local}
+The minimal local calculation explicitly zeros the negative-$k$ entries of its incoming Gaussian before normalization (\code{local_project/simu_Fock_space/src/experiment.py:125--135}). Its one-photon coefficient arrays are $C_{\mathbf e_m,g}(t)$ and $C_{\mathbf e_m,e}(t)$ in its chosen picture and basis. In a common bare field--TLS space with no $k=0$ mode, define
+\begin{equation}
+ \Pi_{\to,1g}=
+ \left(\sum_{m:k_m>0}\ket{\mathbf e_m}\bra{\mathbf e_m}\right)
+ \otimes\ket g\bra g,\qquad
+ \Pi_{\leftarrow,1g}=
+ \left(\sum_{m:k_m<0}\ket{\mathbf e_m}\bra{\mathbf e_m}\right)
+ \otimes\ket g\bra g.
+ \label{eq:projectors}
+\end{equation}
+Then the source's observables are exactly
+\begin{equation}
+ T_{1g}(t)=\bra{\psi(t)}\Pi_{\to,1g}\ket{\psi(t)}
+ =\sum_{m:k_m>0}|C_{\mathbf e_m,g}(t)|^2,
+ \quad
+ R_{1g}(t)=\sum_{m:k_m<0}|C_{\mathbf e_m,g}(t)|^2.
+ \label{eq:localTR}
+\end{equation}
+These are \code{p_transmitted} and \code{p_reflected} in \code{local_project/simu_Fock_space/src/experiment.py:143--167}. They are \emph{joint} bare-TLS-ground, exactly-one-field-photon sector probabilities at one finite time. The same function reports the total norm, bare $P_e$, and $p_\nu$ of Eq.~\eqref{eq:pnu}. This is substantially nearer to a scattering question than $F_a$ or $Q$, because it asks about the side and photon count of one calculation. It is still not the complex $S$-matrix entry of Eq.~\eqref{eq:tramp}.
+
+Assuming every one-photon mode has either positive or negative $k$, one has the exact finite-basis identity
+\begin{equation}
+ T_{1g}(t)+R_{1g}(t)=p_{1g}(t),\qquad
+ p_{1g}=\sum_{m}|C_{\mathbf e_m,g}|^2,
+ \label{eq:TRsum}
+\end{equation}
+not generally $T_{1g}+R_{1g}=1$. If the global state is normalized, the omitted probability is
+\begin{equation}
+ 1-T_{1g}-R_{1g}=p_{1e}+\sum_{\nu\ne1}(p_{\nu g}+p_{\nu e}),
+ \label{eq:missing}
+\end{equation}
+where $p_{\nu s}=\sum_{\mathbf n:\nu(\mathbf n)=\nu}|C_{\mathbf n s}|^2$. This partition includes temporarily excited TLS, vacuum components, and multiphoton components. Under RWA with exactly one conserved total bare excitation and only nonzero signed modes, it simplifies to $T_{1g}+R_{1g}+P_e=1$ at every time. No such simplification holds without RWA. At an appropriately late time, vanishing \emph{excess} local excitation and a separated packet are evidence for asymptotic interpretation, but the dressed ground itself can retain bare TLS excitation and local virtual photons.
+
+The local code's position-space routine forms a Fourier series from the one-photon ground-sector amplitudes (\code{local_project/simu_Fock_space/src/experiment.py:169--180}). This can show whether the outgoing packet has left the TLS and whether periodic wraparound has begun. Its amplitudes include an explicit $e^{-\ii|k_m|t}$ factor because that implementation's propagated coefficients use its own picture convention. The audited QuTiP calculation stores Schr\"odinger-picture coefficients directly. Any comparison of \emph{complex} wavefunctions or spectral amplitudes must align those picture conventions before judging phases.
+
+\section[A rigorous bridge: what a fidelity can bound about T and R]{A rigorous bridge: what a fidelity can bound about $T$ and $R$}
+\label{sec:bounds}
+Suppose two \emph{normalized} outgoing kets $\ket{\psi_A},\ket{\psi_B}$ have been embedded into the same physical Hilbert space, with the same signed mode grid and the same measurement projector $\Pi_{\to,1g}$. Write $\rho_A=\ket{\psi_A}\bra{\psi_A}$ and $\rho_B=\ket{\psi_B}\bra{\psi_B}$. The trace distance of two pure states is
+\begin{equation}
+ D(\rho_A,\rho_B)=\frac12\|\rho_A-\rho_B\|_1
+ =\sqrt{1-|\braket{\psi_A}{\psi_B}|^2}
+ =\sqrt{1-F_s}.
+ \label{eq:tracedistance}
+\end{equation}
+For every effect $0\le E\le I$, in particular any projector, the variational characterization of trace distance gives $|\Tr[E(\rho_A-\rho_B)]|\le D$. Therefore
+\begin{equation}
+ \boxed{|T_{1g}^{A}(t)-T_{1g}^{B}(t)|\le\sqrt{1-F_s(t)},\qquad
+ |R_{1g}^{A}(t)-R_{1g}^{B}(t)|\le\sqrt{1-F_s(t)}.}
+ \label{eq:TRbound}
+\end{equation}
+This is the precise bridge from a \emph{correct} global fidelity to the two directional probabilities. For example, $F_s(t_*)\ge0.99$ guarantees that each of these probability differences at the \emph{same} $t_*$ is at most $0.1$; a much tighter fidelity is needed for percent-level probability accuracy. The inequality compares two finite computations. It cannot show that either computation is close to the physical continuum answer without a validated reference or convergence argument. It also does not bound the error of a complex $t(k)$ from one integrated packet probability.
+
+At matching output times, concavity of the square root gives an average statement:
+\begin{equation}
+ \frac1J\sum_{j=0}^{J-1}|T_A(t_j)-T_B(t_j)|
+ \le\frac1J\sum_j\sqrt{1-F_s(t_j)}
+ \le\sqrt{1-\overline F_s}.
+ \label{eq:meanbound}
+\end{equation}
+But Eq.~\eqref{eq:meanbound} controls only a \emph{mean} probability difference. It supplies no useful endpoint bound when the endpoint is one of many samples. This is why the coupling-sweep mean cannot certify an outgoing transmission result by itself. The full $F_s(t_j)$ trace, or at least $F_s$ in a chosen outgoing-time window, is required.
+
+For the TLS probability, trace distance after partial trace and the fidelity--trace-distance inequality give
+\begin{equation}
+ |P_e^A(t)-P_e^B(t)|
+ \le D(\rho_a^A(t),\rho_a^B(t))
+ \le\sqrt{1-F_a(t)}.
+ \label{eq:Pebound}
+\end{equation}
+This is the natural meaning of a high \code{atom} fidelity: the two simulations agree on \emph{TLS measurements}. It says nothing direct about $T_{1g}$ or $R_{1g}$, because their projectors act on both TLS and field.
+
+The exact field fidelity $F_f$ similarly controls a \emph{field-only} direction projector, for example $\bigl(\sum_{m:k_m>0}\ket{\mathbf e_m}\bra{\mathbf e_m}\bigr)\otimes I_a$, with probability $T_{1g}+T_{1e}$. It does not alone bound $T_{1g}$, which also selects the TLS ground state. The quotient $Q$ has \emph{no} analogue of Eqs.~\eqref{eq:TRbound}--\eqref{eq:Pebound}. To see this concretely, reinterpret counterexample (b) of Section~\ref{sec:ratio} with field states $\ket0=\ket{1_{R}}$, $\ket1=\ket{1_{L}}$. It has $Q=1$ but $T_{1g}^A=1$ and $T_{1g}^B=1/4$. Thus a perfect \code{photon_bound} value can coexist with a $3/4$ transmission-probability disagreement.
+
+Nor does the converse of Eq.~\eqref{eq:TRbound} hold: equal $T$ and $R$ need not imply high global or field fidelity. Equation~\eqref{eq:orthoright} gives $T_A=T_B=1$ with $F_s=0$. Integrated directional probabilities discard spectral and phase information. A useful hierarchy is therefore
+\begin{equation}
+ \begin{gathered}
+ \text{full ket agreement}\ \Longrightarrow\
+ \text{agreement of identical directional projectors};\\
+ \text{the converse requires extra assumptions.}
+ \end{gathered}
+ \label{eq:hierarchy}
+\end{equation}
+
+\section{How to extract the quantities relevant to a photon probe}
+\label{sec:protocol}
+\subsection{First target: finite-time, sector-resolved probabilities}
+For any saved state in the audited repository, the \emph{mathematical} operation corresponding to Eq.~\eqref{eq:localTR} is to inspect the amplitudes with exactly one waveguide photon and the bare TLS ground label:
+\begin{equation}
+ b_m(t_j)=C_{\mathbf e_m,g}(t_j),\qquad
+ T_{1g}(t_j)=\sum_{k_m>0}|b_m(t_j)|^2,\qquad
+ R_{1g}(t_j)=\sum_{k_m<0}|b_m(t_j)|^2.
+ \label{eq:bm}
+\end{equation}
+In the \code{StateTruncated} and \code{StateTotalCap} wrappers, a label \code{\{'n3':1,'atom':'g'\}} denotes $\ket{\mathbf e_3;g}$; omitted \code{n} keys mean zero (\code{src/states.py:43--53,66--87,140--167,232--248}). The \code{StateAtom} label also needs \code{'n_atom':0}. The sums must use \code{config.frequencies[m]} \emph{after} grid construction, not the requested mode count. One may compute these from already stored QuTiP ket vectors after wrapping them in the matching \code{State} class, as \code{scripts/sweep_g_fidelity.py:54--57} already does for fidelity calculation. No global density matrix is needed.
+
+The output should contain $T_{1g}(t)$, $R_{1g}(t)$, $P_e(t)$, $p_\nu(t)$, and the initial left-moving weight of Eq.~\eqref{eq:initialleft}. Plotting these against the \emph{actual} \code{sim.times} distinguishes an incoming stage, interaction stage, outgoing plateau and periodic recurrence. A plateau in $T_{1g},R_{1g}$ together with a spatially separated packet is a necessary practical sign of an outgoing measurement window; its absence makes a single final number timing-dependent. For \code{rabi-truncation}'s default packet, first enforce a right-moving input or explicitly account for the initial $k<0$ amplitude. Merely subtracting $R_{1g}(0)$ from $R_{1g}(T)$ is not generally a valid scattering probability, because initially left-going and newly reflected amplitudes can interfere in the same final modes. Coherent channel preparation is the clean solution.
+
+\subsection{Second target: elastic spectral amplitudes}
+If only weak dressing is relevant and the bare one-photon ground sector is an adequate channel approximation, inspect the \emph{complex} numbers $b_m(t)$, not only $|b_m(t)|^2$. For an outgoing time $t_*$, a naive interaction-picture coefficient is
+\begin{equation}
+ \widetilde b_m(t_*)=e^{\ii(\omega_m+E_{\rm ch})t_*}b_m(t_*),
+ \label{eq:interactionpicture}
+\end{equation}
+where $E_{\rm ch}=0$ for the bare ground convention of Eq.~\eqref{eq:h0}, but should be the dressed ground energy for an exact channel construction. The phase factor removes the known free propagation. For each $\kappa>0$ for which both signs occur on the grid, let $m_+(\kappa)$ and $m_-(\kappa)$ be the unique mode indices satisfying $k_{m_+(\kappa)}=\kappa$ and $k_{m_-(\kappa)}=-\kappa$; write $b_{\kappa,\pm}=b_{m_\pm(\kappa)}$, $\widetilde b_{\kappa,\pm}=\widetilde b_{m_\pm(\kappa)}$, and $c_{\kappa,+}=c_{m_+(\kappa)}$. If the input has $c_m=0$ for $k_m<0$, and if the packet and channel approximations justify elastic diagonal scattering, one may estimate
+\begin{equation}
+ t(\kappa)\simeq\frac{\widetilde b_{\kappa,+}(t_*)}{c_{\kappa,+}},
+ \qquad
+ r(\kappa)\simeq\frac{\widetilde b_{\kappa,-}(t_*)}{c_{\kappa,+}},
+ \quad\kappa>0,
+ \label{eq:ratiospectral}
+\end{equation}
+\emph{only} at modes with appreciable incoming amplitude $|c_{\kappa,+}|$ and with a matched $\pm\kappa$ pair. Reflection phases depend on the coordinate origin and $x_a$; shifting the scatterer by $x_a$ multiplies a reflected plane-wave coefficient by a convention-dependent factor such as $e^{2\ii\kappa x_a}$. A free-propagation run at $g=0$ is a practical phase reference. Dividing by a tiny $c_{\kappa,+}$ is ill-conditioned; a narrowband packet cannot recover $t(\kappa)$ far outside its spectral support.
+
+Equation~\eqref{eq:ratiospectral} is \emph{not} an exact recipe in the ultrastrong no-RWA regime because $\ket{\mathbf e_m;g}$ is not an exact dressed asymptotic channel. For quantitative $S$-matrix work there, define $\ket G$ and the in/out channel injection in Eq.~\eqref{eq:moller}, or measure outgoing localized wavepacket amplitudes sufficiently far from the interacting region and compare against free propagation. Resolve inelastic and bound-state channels separately. The finite bare projections remain useful diagnostics along the way, but their limitations must travel with any reported $t,r$.
+
+\subsection{Minimal comparison that bridges the two repositories}
+To compare their observables at a fixed finite resolution, first make the two programs represent the \emph{same} finite model:
+\begin{enumerate}[leftmargin=*,label=\arabic*.]
+\item Use the same signed $\{k_m\}$ and the same $\omega_m=c|k_m|$, including mode order and zero-mode policy. The user code's IR/UV band and the audited FFT-like grid otherwise select different Hamiltonians. Both positive and negative resonant modes must be present to measure reflection.
+\item Match $L$, $x_a$, $\omega_a$, photon packet $k_0,x_p$, and width. Comparing Eq.~\eqref{eq:packet} with the local Gaussian $e^{-(k-k_0)^2/(4\sigma_k^2)}$ gives $\sigma_k=1/(\sqrt2\sigma_p)$ for equal amplitude envelopes. Set the negative-$k$ coefficients to zero in both preparations and normalize on the retained positive modes.
+\item Match the coupling \emph{matrix elements}, including any $L^{-1/2}$ scaling and phase convention. Matching the symbols $g$ and $D$ by name is insufficient; for the same $\sqrt{|k|}$ profile a candidate relation is $g=D/\sqrt L$ in the conventions of the two implementations, followed by an explicit matrix-element check.
+\item Use the same Fock projector $P_N$ and RWA switch. The local integrator's work basis and post-step projection can differ from exact unitary evolution with $P_NHP_N$; any residual difference must be separated from solver step-size effects. Compare initial vectors after embedding: $F_s(0)$ should be one for the one-photon preparation.
+\item At the same physical output times, compare norm convention, $P_e(t)$, $p_\nu(t)$, $T_{1g}(t)$, $R_{1g}(t)$ and the spatial packet. Then use $F_s(t)$ and Eq.~\eqref{eq:TRbound} as a cross-check of those probabilities. A field fidelity from Eq.~\eqref{eq:fieldfidelity} can diagnose field disagreement that $F_a$ hides.
+\item Identify an outgoing window before periodic wraparound and repeat it for increasing $N$, momentum bandwidth, and $L$. Only after those checks use Eq.~\eqref{eq:ratiospectral} for tentative complex amplitudes, or the dressed-channel definition for a controlled non-RWA $S$ matrix.
+\end{enumerate}
+This sequence separates three logically different claims: \emph{code agreement} at fixed finite model, \emph{convergence} of that model as regulators are varied, and \emph{scattering interpretation} of the late-time channel projections. A fidelity curve addresses the first, and only indirectly the second and third.
+
+\section{Interpretation guide for a plotted curve}
+\label{sec:guide}
+Given any figure labelled ``fidelity versus $g$'', the following equations are the shortest reliable route to its meaning:
+\begin{align*}
+\texttt{state: }&\overline{\left|\sum_{\mathbf n,s}(C^X_{\mathbf n s})^*C^{\rm ref}_{\mathbf n s}\right|^2},\\
+\texttt{atom: }&\overline{\left[\Tr\sqrt{\sqrt{\rho_a^X}\rho_a^{\rm ref}\sqrt{\rho_a^X}}\right]^2},\\
+\texttt{photon\_bound: }&\overline{F_s/F_a}\quad(\text{undefined samples omitted}),\\
+\texttt{desired bare }T/R:&\sum_{\pm k_m>0}|C^X_{\mathbf e_m,g}(t_{\rm out})|^2,\\
+\texttt{desired elastic }t/r:&\bra{\text{outgoing channel}}S\ket{\text{incoming channel}}.
+\end{align*}
+The overbar on the first three lines is the sampled-time mean over the \emph{entire} evolution, while $t_{\rm out}$ is a selected postinteraction time or window. The last two lines are not computed by the principal fidelity sweep. The difference between lines is a difference of \emph{measured operator or channel}, not merely a difference of plotting style.
+
+A concise reading of the saved curves is: agreement of the truncated basis with the finite total-cap reference decreases as the stored coupling $g$ increases; TLS reductions remain much more alike than complete kets; the auxiliary curve adds no independent dynamical channel; coherent initial projections already differ before interaction. This is useful evidence about the chosen Hilbert-space restrictions. It does not establish a transmission spectrum, a reflection spectrum, or an asymptotic non-RWA $S$ matrix. The path from those curves to the target quantity is Eq.~\eqref{eq:TRbound} for \emph{agreement between two computed $T/R$ values}, followed by the channel and convergence conditions in Sections~\ref{sec:smatrix}--\ref{sec:protocol} for their physical scattering interpretation.
+
+\section{Source map and external physics references}
+\label{sec:sources}
+The internal references below identify the exact code paths on which the formulas depend. They are source pointers, not claims that every current test covers every edge case.
+\begin{center}\small
+\begin{longtable}{p{.35\textwidth}p{.55\textwidth}}
+\toprule Source & Meaning in this note\\\midrule\endfirsthead
+\toprule Source & Meaning in this note\\\midrule\endhead
+\code{src/utilities.py:25--184} & Configuration defaults, physical mode grid, selection, $g$, packet center and output-time parameters.\\
+\code{src/states.py:32--167} & Occupation sets, dimensions, and label-to-index mappings.\\
+\code{src/states.py:181--358} & Incoming Gaussian, number/coherent preparations, projected normalization, reduced TLS and field matrices.\\
+\code{src/hamiltonians.py:53--88,98--155,157--272} & Matrix elements, RWA switch, auxiliary transition factor and selected Hamiltonian.\\
+\code{src/simulation.py:27--123} & QuTiP ket propagation, time array, $P_e$, TLS entropy, energy accessors.\\
+\code{src/fidelities.py:8--151} & Cross-basis overlap, physical-mode embedding and comparison to one finite reference.\\
+\code{scripts/sweep_g_fidelity.py:43--193} & Reference/candidate choices, three plotted quantities, sampled-time averages and NPZ keys.\\
+\code{scripts/full_cumulative_fidelity.py:19--105} & Neighboring total-cap final-state comparisons.\\
+\code{scripts/compare_mode_selection.py:75--169} & Grid-selection time averages and heatmap quantities.\\
+\code{src/energy_profile.py:47--146} & Exact energy partitions, distinct from photon-number probabilities.\\
+\code{local_project/simu_Fock_space/src/experiment.py:119--180} & Right-moving input and finite-time $T_{1g},R_{1g}$ in the independent local implementation.\\
+\code{tests/test_fidelities.py:21--91,188--206} & Existing fidelity tests; they do not exercise the $\ket{1,1;g}$ \code{StateFull} versus \code{StateTotalCap} failure demonstrated here.\\
+\bottomrule
+\end{longtable}
+\end{center}
+For the continuum and non-RWA interpretation, the following are primary research sources rather than assumptions about the repository: \href{https://arxiv.org/abs/1705.09094}{S\'anchez-Burillo \emph{et al.}, \emph{Emergent Causality and the N-photon Scattering Matrix in Waveguide QED}} develops asymptotic scattering states and ground-state structure; \href{https://arxiv.org/abs/1406.5779}{S\'anchez-Burillo \emph{et al.}, \emph{Scattering in the ultrastrong regime: nonlinear optics with one photon}} analyzes dressed bound states and inelastic single-photon scattering; \href{https://arxiv.org/abs/1802.01665}{Gheeraert \emph{et al.}, \emph{Particle Production in Ultra-Strong Coupling Waveguide QED}} studies beyond-RWA multiphoton production. Their Hamiltonian implementations differ from this repository; they support the need to specify dressed asymptotic channels and possible inelastic outputs, not a numerical claim about any saved array here.
+
+\appendix
+\section{Coefficient-matrix derivation of all three fidelities}
+\label{app:matrix}
+This appendix derives the comparisons directly from the coefficients in Eq.~\eqref{eq:ket}. Fix one common field basis of size $B$ after any required embedding. Define the $B\times2$ complex matrix
+\begin{equation}
+ C_X=\begin{pmatrix}
+ C^X_{\mathbf n_1g}&C^X_{\mathbf n_1e}\\
+ \vdots&\vdots\\
+ C^X_{\mathbf n_Bg}&C^X_{\mathbf n_Be}
+ \end{pmatrix},\qquad
+ \|C_X\|_F^2=\sum_{i,s}|C^X_{\mathbf n_i s}|^2=1.
+ \label{eq:coeffmatrix}
+\end{equation}
+Here $\|\cdot\|_F$ is the Frobenius norm; $B$ is the cardinality of the union of both occupied field bases, with zero rows added for absent occupations. The two columns $c_g^X,c_e^X\in\mathbb C^B$ are the field vectors $\ket{\phi_g^X},\ket{\phi_e^X}$ in a fixed ordering. A source ket vector interleaves them as $(C_{1g},C_{1e},C_{2g},C_{2e},\ldots)$, so \code{v[0::2]} is $c_g$ and \code{v[1::2]} is $c_e$.
+
+\subsection{Trace operations in entries}
+The field trace is immediate:
+\begin{equation}
+ (\rho_f^X)_{ij}=\sum_{s=g,e} C^X_{is}(C^X_{js})^*,
+ \qquad \rho_f^X=C_XC_X^\dagger.
+ \label{eq:matrixfield}
+\end{equation}
+The TLS trace is
+\begin{equation}
+ (\rho_a^X)_{ss'}=\sum_{i=1}^B C^X_{is}(C^X_{is'})^*,
+ \qquad \rho_a^X=C_X^{\mathsf T}C_X^*,
+ \label{eq:matrixatom}
+\end{equation}
+where $\mathsf T$ means transpose without conjugation and $*$ means entrywise conjugation. The placement of the transpose is worth checking: $C_X^\dagger C_X$ has entry $\sum_i(C_{is}^X)^*C_{is'}^X$, the complex conjugate of Eq.~\eqref{eq:matrixatom}; using it as $\rho_a$ would reverse the sign of the off-diagonal imaginary part in the chosen TLS basis. The audited code uses Eq.~\eqref{eq:matrixatom} exactly through its two dot products. Both matrices are positive semidefinite and have trace one because $\|C_X\|_F^2=1$.
+
+The global inner product is
+\begin{equation}
+ \braket{\psi_A}{\psi_B}
+ =\sum_{i,s}(C^A_{is})^*C^B_{is}
+ =\Tr(C_A^\dagger C_B).
+ \label{eq:matrixglobal}
+\end{equation}
+Let $G=C_A^\dagger C_B$. Equation~\eqref{eq:matrixglobal} says $F_s=|\Tr G|^2$, while Eq.~\eqref{eq:fieldfidelity} says $F_f=\|G\|_1^2$. The first retains the \emph{signed complex sum} of the two diagonal TLS-overlap channels; the second sums the singular values and optimizes over a TLS unitary in Uhlmann's theorem. The difference between a trace and a trace norm is precisely why reduced-field fidelity can remain one when global states are orthogonal.
+
+\subsection{A formula requiring only four complex overlaps}
+Write
+\begin{equation}
+ G=\begin{pmatrix}
+ \braket{\phi_g^A}{\phi_g^B}&\braket{\phi_g^A}{\phi_e^B}\\
+ \braket{\phi_e^A}{\phi_g^B}&\braket{\phi_e^A}{\phi_e^B}
+ \end{pmatrix}.
+ \label{eq:Gentries}
+\end{equation}
+If its singular values are $s_1,s_2\ge0$, then $s_1^2+s_2^2=\Tr(G^\dagger G)$ and $s_1s_2=|\det G|$. Therefore
+\begin{equation}
+ \boxed{F_f=\Tr(G^\dagger G)+2|\det G|,
+ \qquad F_s=|G_{gg}+G_{ee}|^2.}
+ \label{eq:tinyformula}
+\end{equation}
+This is an exact alternative to the singular-value call for two TLS states. It uses four complex overlaps and no $B\times B$ field density matrix. It also gives $F_s\le F_f$ directly from $|\Tr G|\le\|G\|_1$. The field fidelity still requires a correct physical mode embedding: a formally computed $G$ on mislabeled modes has no physical meaning.
+
+For the TLS, Eq.~\eqref{eq:qubitfidelity} requires only two $2\times2$ matrices. Thus none of the three mathematically valid fidelities demands propagation of a global $d\times d$ density matrix. The resource question is how to generate and store the kets and their amplitudes, not whether a mixed global state must be evolved.
+
+\section[A three-channel worked example: amplitudes, T/R, and fidelities]{A three-channel worked example: amplitudes, $T/R$, and fidelities}
+\label{app:threechannel}
+Consider the RWA one-excitation subspace spanned by three mutually orthogonal bare states:
+\begin{equation}
+ \ket R=\ket{1_{k_+};g},\quad k_+>0;\qquad
+ \ket L=\ket{1_{k_-};g},\quad k_-<0;\qquad
+ \ket E=\ket{\mathbf0;e}.
+ \label{eq:threebasis}
+\end{equation}
+The field vacuum in $\ket E$ is orthogonal to both one-photon field states. Let two normalized numerical outputs at a common time be
+\begin{equation}
+ \ket{\psi_X}=u_X\ket R+v_X\ket L+w_X\ket E,
+ \qquad |u_X|^2+|v_X|^2+|w_X|^2=1,\quad X\in\{A,B\}.
+ \label{eq:threevector}
+\end{equation}
+Every coefficient is a complex number. The finite-time directional and TLS probabilities are
+\begin{equation}
+ T_X=|u_X|^2,\qquad R_X=|v_X|^2,\qquad P_{e,X}=|w_X|^2,
+ \qquad T_X+R_X+P_{e,X}=1.
+ \label{eq:threeprob}
+\end{equation}
+The last equality follows from the \emph{specific} three-channel subspace, not from generic no-RWA dynamics. The global fidelity is
+\begin{equation}
+ F_s=|u_A^*u_B+v_A^*v_B+w_A^*w_B|^2.
+ \label{eq:threeglobal}
+\end{equation}
+The TLS matrix has no off-diagonal term, because the ground-TLS field vector lies in the one-photon sector while the excited-TLS field vector lies in vacuum:
+\begin{equation}
+ \rho_a^X=\begin{pmatrix}T_X+R_X&0\\0&P_{e,X}\end{pmatrix}.
+ \label{eq:threerhoa}
+\end{equation}
+Substituting in Eq.~\eqref{eq:qubitfidelity} yields
+\begin{equation}
+ F_a=\left[\sqrt{(T_A+R_A)(T_B+R_B)}
+ +\sqrt{P_{e,A}P_{e,B}}\right]^2.
+ \label{eq:threeatomf}
+\end{equation}
+The TLS fidelity depends on the \emph{sum} $T+R$ but not on how it splits between directions. If both TLS populations agree, $P_{e,A}=P_{e,B}=p$, then $F_a=[(1-p)+p]^2=1$ for \emph{any} two directional splits. In particular, at an ideal outgoing time $p=0$, $F_a=1$ even if $T_A=1,R_A=0$ and $T_B=0,R_B=1$. This is the exact mechanism behind the warning about the \code{atom} sweep curve.
+
+The same probabilities can also hide phases. Take $w_A=w_B=0$, $u_A=v_A=1/\sqrt2$, $u_B=1/\sqrt2$, $v_B=-1/\sqrt2$. Both outputs have $T=R=1/2$, but Eq.~\eqref{eq:threeglobal} gives $F_s=0$. Their relative transmitted/reflected phase differs by $\pi$. A probe of \emph{only} $T,R$ cannot detect this; an interference experiment or complex channel-amplitude reconstruction can. A global fidelity can detect it but still cannot tell which phase difference is physically correct without a reference.
+
+The matrix $G$ of Eq.~\eqref{eq:Gentries} is in this example
+\begin{equation}
+ G=\begin{pmatrix}
+ u_A^*u_B+v_A^*v_B&0\\
+ 0&w_A^*w_B
+ \end{pmatrix},\qquad
+ F_f=\bigl(|u_A^*u_B+v_A^*v_B|+|w_A^*w_B|\bigr)^2.
+ \label{eq:threeG}
+\end{equation}
+The absolute values in $F_f$ permit a different relative TLS phase from the global overlap. This worked calculation exhibits all three metric constructions using only three physical channels.
+
+\section[Why incident direction and phase reference matter for an S column]{Why incident direction and phase reference matter for an $S$ column}
+\label{app:direction}
+At a fixed positive energy $\omega$ with two degenerate propagation directions, assemble incoming and \emph{elastic} outgoing channel amplitudes into two-component vectors $c=(c_+,c_-)^{\mathsf T}$ and $b=(b_+,b_-)^{\mathsf T}$. The elastic part of the $S$ matrix acts as
+\begin{equation}
+ \begin{pmatrix}b_+\\b_-\end{pmatrix}
+ =\begin{pmatrix}S_{++}&S_{+-}\\S_{-+}&S_{--}\end{pmatrix}
+ \begin{pmatrix}c_+\\c_-\end{pmatrix},
+ \label{eq:Smatrix2}
+\end{equation}
+Other outgoing channels, including inelastic multiphoton channels, are orthogonal labels in the full $S$ matrix and must be accounted for separately. In an ideal elastic reciprocal and left--right symmetric model one often has $S_{++}=S_{--}=t$ and $S_{+-}=S_{-+}=r$, but the audited finite code does not impose that reduced form as a measurement assumption.
+
+If $c_-=0$, Eq.~\eqref{eq:Smatrix2} isolates one elastic matrix column: $b_+=S_{++}c_+$ and $b_-=S_{-+}c_+$. If $c_-\ne0$, then $b_-=S_{-+}c_++S_{--}c_-$. Squaring gives the interference term
+\begin{equation}
+ |b_-|^2=|S_{-+}c_+|^2+|S_{--}c_-|^2
+ +2\Re\bigl[(S_{-+}c_+)^*(S_{--}c_-)\bigr].
+ \label{eq:initialleftinterference}
+\end{equation}
+This makes the logical problem with an initially bidirectional Gaussian exact: the final left-moving probability is neither $|r|^2$ nor $|r|^2+P_{\leftarrow}^{\rm in}$ in general. Even subtracting the initial left-moving weight does not remove the interference term. A purely right-moving input, or multiple independently prepared inputs sufficient to invert Eq.~\eqref{eq:Smatrix2}, is needed to identify one $S$-matrix column.
+
+For one weakly dressed finite calculation, a free reference run defines a more transparent phase convention than Eq.~\eqref{eq:interactionpicture}. Let $b_m^{(g)}(t)$ be a complex bare-channel coefficient with the TLS coupling on, and let $b_m^{(0)}(t)=e^{-\ii\omega_mt}c_m$ be the uncoupled output from the \emph{same} initial packet and same code picture. Where $c_m\ne0$, the ratio $b_{m,+}^{(g)}(t_*)/b_{m,+}^{(0)}(t_*)$ cancels the free propagation phase and estimates the elastic transmission coefficient under the assumptions stated in Section~\ref{sec:protocol}. For reflection, the uncoupled negative-direction coefficient vanishes if the input was properly one-sided; divide the outgoing negative coefficient by the \emph{positive} free input coefficient at the matched $|k|$, then account for the spatial origin. This is a phase-sensitive operation. It cannot be replaced by a fidelity with the free-evolved packet because one scalar overlap integrates over all excited modes and both directions.
+
+With unequal incoming and outgoing group velocities, probabilities associated with unit \emph{flux} carry velocity or density-of-states factors. The simple $|t|^2,|r|^2$ formulas of Eqs.~\eqref{eq:unitaritychannels}--\eqref{eq:packetprob} rely on the stated linear, even, equal-speed channels. Any numerical scattering coefficient should declare its channel normalization as well as its phase origin.
+
+\section{Source-to-equation audit of the coupling-sweep pipeline}
+\label{app:pipeline}
+The following listing excerpts are read directly from the audited Python files at LaTeX compilation. They keep the exact line numbers visible, so the mathematics above can be traced without reconstructing the control flow from a plot filename.
+\subsection{Which basis labels are summed?}
+\lstinputlisting[firstline=8,lastline=24,firstnumber=8]{../../src/fidelities.py}
+The returned class is the same class when types agree; otherwise it is \code{StateTruncated}. This determines the index set in Eq.~\eqref{eq:fstate}. The word \code{isinstance} in lines 35--40 below is true for the concrete class and its mixins; when neither object is a truncated state, the code constructs a minimal truncated object for label enumeration. No new physical state is propagated by this object.
+\lstinputlisting[firstline=26,lastline=53,firstnumber=26]{../../src/fidelities.py}
+Line 49 enumerates labels; line 50 reads their two amplitudes and adds their complex product; line 52 squares the modulus \emph{after} summation. This procedure is exact when the enumerated set equals the nonzero support intersection and each label denotes the same physical $k$ modes. The $M=2,N=2$ \code{StateFull}--\code{StateTotalCap} counterexample in Section~\ref{sec:global} violates the first condition.
+
+\subsection[Why the second fidelity is 2 by 2]{Why the second fidelity is $2\times2$}
+\lstinputlisting[firstline=228,lastline=240,firstnumber=228]{../../src/states.py}
+For $v=(C_{1g},C_{1e},\ldots)$, lines 235--236 form $c_g,c_e$; lines 237--240 form exactly Eq.~\eqref{eq:matrixatom}. No information about the sign of a photon's wavevector survives this partial trace.
+\lstinputlisting[firstline=66,lastline=79,firstnumber=66]{../../scripts/sweep_g_fidelity.py}
+Lines 66--67 build $\rho_a^A,\rho_a^B$; line 68 squares QuTiP's root fidelity. Lines 73--74 compute state and atom fidelities at each paired saved time. Line 77 evaluates the quotient only when its denominator is positive. The return statement at line 78 names that quotient \code{f_photon}, but its algebra is Eq.~\eqref{eq:ratio}, not Eq.~\eqref{eq:fieldfidelity}.
+\lstinputlisting[firstline=81,lastline=99,firstnumber=81]{../../scripts/sweep_g_fidelity.py}
+Lines 89 and 92 construct fresh reference/candidate runs at the same $g$. Lines 94--96 take three distinct means; the last is a mean of pointwise quotients. No source line in this pipeline constructs an outgoing projector of Eq.~\eqref{eq:projectors}, a field Gram matrix of Eq.~\eqref{eq:gram}, or an asymptotic channel amplitude of Eq.~\eqref{eq:tramp}.
+
+
+\end{document}
