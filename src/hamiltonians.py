@@ -1,272 +1,70 @@
-"""
-Implements the Quantum Rabi Hamiltonian in its different setups
-config -> dictionary with relevant parameters/assumptions of the simulation
-Hamiltonian -> abstract class implementing common utilities
-Precise implementations in child classes
-HamiltonianFull: only excitation cap
-HamiltonianTruncated: original truncation scheme, no cross-mode excitation states
-HamiltonianBand: HamiltonianTruncated with an auxiliary state with the same frequency as the atom
-"""
+"""Projected H = H0 + D V, with u_m = i f_m exp(-i k_m x_tls) / sqrt(L)."""
 
-import qutip
 import numpy as np
-import scipy.sparse as sp
-from utilities import Config
-from abc import ABC, abstractmethod
-from itertools import product
-from states import FullBasis, TruncatedBasis, AtomBasis, TotalCapBasis
+import qutip
+from scipy.sparse import coo_matrix, diags
 
-class Hamiltonian(ABC):
-    def __init__(self, config):
-        self.config = config
-        self.d = self.compute_dim() # implemented in child classes
-        self.H = sp.lil_matrix((self.d,self.d), dtype=complex)
 
-    # Abstract methods: implemented depending on precise hamiltonian
-    @abstractmethod
-    def compute_dim(self) -> int: ...
+class Hamiltonian:
+    def __init__(self, basis, k_tab, param_atom, RWA=False):
+        self.basis = basis
+        self.k_tab = np.asarray(k_tab)
+        self.param_atom = param_atom
+        self.RWA = RWA
+        L, omega, x = (float(param_atom[key]) for key in ("L", "omega_0", "x_tls"))
+        if not np.isfinite([L, omega, x]).all() or L <= 0 or omega < 0:
+            raise ValueError("L must be positive, omega_0 nonnegative, and x_tls finite")
+        self.H0 = self.free()
+        self.V = self.interaction()
 
-    @abstractmethod
-    def free(self) -> sp.lil_matrix: ...
+    def free(self):
+        energies = np.zeros(self.basis.dim)
+        for i, occupation in enumerate(self.basis.states):
+            field_energy = np.dot(np.abs(self.k_tab), occupation)
+            energies[2 * i] = field_energy
+            energies[2 * i + 1] = field_energy + self.param_atom["omega_0"]
+        return diags(energies, format="csr")
 
-    @abstractmethod
-    def interaction(self) -> sp.lil_matrix: ...
-
-    # Calculate indices {'n1': 1, 'n3': 4, 'atom': 'g'} -> integer index mapping
-    @abstractmethod
-    def state_to_index(self, state: dict) -> int: ...
-
-    # get item: val = H[{state_1}, {state_2}]
-    def __getitem__(self, states: tuple[dict, dict]) -> complex:
-        row, col = states
-        return self.H[self.state_to_index(row), self.state_to_index(col)]
-
-    # set item: H[{state_1}, {state_2}] = val
-    def __setitem__(self, states: tuple[dict, dict], value: complex):
-        row, col = states
-        self.H[self.state_to_index(row), self.state_to_index(col)] = value
-
-    def build_hamiltonian(self):
-        self.free()
-        self.interaction()
-
-    def g(self, k) -> complex:
-        return self.config.g * np.sqrt(np.abs(k))
-
-    def atom_index(self, atom):
-        return 1 if atom == "e" else 0
-
-    def to_qObj(self):
-        return qutip.Qobj(self.H)
-
-    def transition_possible(self, ket, bra) -> bool:
-        photon_diffs =  [
-          ket.get(f'n{m+1}', 0) - bra.get(f'n{m+1}', 0)
-          for m in range(self.config.modes)
-        ]
-        nonzero_diffs = [d for d in photon_diffs if d != 0]
-        atom_change = self.atom_index(ket['atom']) - self.atom_index(bra['atom'])
-
-        if atom_change == 0 or len(nonzero_diffs) != 1 :
-            return False
+    def interaction(self):
+        profile = self.param_atom["coupling"]
+        if profile == "sqrt":
+            form_factor = np.sqrt(np.abs(self.k_tab))
+        elif profile == "flat":
+            form_factor = np.ones(self.basis.modes)
         else:
-            if self.config.RWA:
-                if atom_change + nonzero_diffs[0] == 0: return True
-                else:
-                    return False
-            else: # no RWA
-                return abs(nonzero_diffs[0]) == 1
+            raise ValueError("coupling must be flat or sqrt")
+        u = 1j * form_factor * np.exp(-1j * self.k_tab * self.param_atom["x_tls"])
+        u /= np.sqrt(self.param_atom["L"])
+        rows, cols, values, mode_ids = [], [], [], []
+        for i, occupation in enumerate(self.basis.states):
+            for atom in (0, 1):
+                col = 2 * i + atom
+                for m in range(self.basis.modes):
+                    if occupation[m] and (not self.RWA or atom == 0):
+                        target = list(occupation)
+                        target[m] -= 1
+                        j = self.basis.index[tuple(target)]
+                        rows.append(2 * j + 1 - atom)
+                        cols.append(col)
+                        values.append(u[m] * np.sqrt(occupation[m]))
+                        mode_ids.append(m)
+                    if not self.RWA or atom == 1:
+                        target = list(occupation)
+                        target[m] += 1
+                        j = self.basis.index.get(tuple(target))
+                        if j is not None:
+                            rows.append(2 * j + 1 - atom)
+                            cols.append(col)
+                            values.append(u[m].conjugate() * np.sqrt(occupation[m] + 1))
+                            mode_ids.append(m)
+        self.transition_rows = np.asarray(rows, dtype=int)
+        self.transition_cols = np.asarray(cols, dtype=int)
+        self.transition_values = np.asarray(values, dtype=complex)
+        self.transition_modes = np.asarray(mode_ids, dtype=int)
+        return coo_matrix((values, (rows, cols)), shape=(self.basis.dim, self.basis.dim)).tocsr()
 
-    def transition_sign(self, ket, bra) -> int:
-        # Atom gains -> +, atom loses -> -
-        photon_diffs =  [
-          ket.get(f'n{m+1}', 0) - bra.get(f'n{m+1}', 0)
-          for m in range(self.config.modes)
-        ]
-        nonzero_diffs = [d for d in photon_diffs if d != 0]
-        assert len(nonzero_diffs) == 1 and abs(nonzero_diffs[0]) == 1, f"Invalid transition {bra} -> {ket}"
-        return nonzero_diffs[0]
-
-    def transition_location(self, ket, bra):
-        photon_diffs = [
-            ket.get(f'n{m + 1}', 0) - bra.get(f'n{m + 1}', 0)
-            for m in range(self.config.modes)
-        ]
-        nonzero_diffs = [(i,d) for i, d in enumerate(photon_diffs) if d != 0]
-        return nonzero_diffs[0][0]
-
-class HamiltonianFull(FullBasis, Hamiltonian):
-    def free(self):
-        M = self.config.modes
-        hbar, c = self.config.hbar, self.config.c
-        w, ks = self.config.w_atom, self.config.frequencies
-
-        # Free H: count excitations in each mode/atom and add the corresponding energy
-        for state in self.all_states():
-            if state['atom'] == 'g':
-                self[state, state] = hbar * c * np.sum( [state.get(f'n{m+1}',0) * np.abs(ks[m]) for m in range(M)])
-            elif state['atom'] == 'e':
-                self[state, state] = hbar * ( w + c * np.sum( [state.get(f'n{m+1}',0) * np.abs(ks[m]) for m in range(M)]) )
-
-    def interaction(self):
-        hbar, c = self.config.hbar, self.config.c
-        ks, x = self.config.frequencies, self.config.x_atom
-
-        # Interaction H: energy for each pair of states that makes a feasible transition (otherwise zero)
-        for ket, bra in product(self.all_states(), repeat=2):
-            if self.transition_possible(ket, bra):
-                sign = self.transition_sign(ket, bra)
-                trans_index = self.transition_location(ket, bra)
-                eigenvalue = np.sqrt(max(bra.get(f'n{trans_index+1}',0),
-                                         ket.get(f'n{trans_index+1}', 0))) # eigenvalue of the bosonic operator
-
-                self[ket, bra] = hbar * self.g(ks[trans_index]) * eigenvalue * np.exp(sign * 1j * ks[trans_index] * x)
-
-class HamiltonianTruncated(TruncatedBasis, Hamiltonian):
-    # state: |n_m ; s>
-
-    def free(self):
-        hbar, c = self.config.hbar, self.config.c
-        w, ks = self.config.w_atom, self.config.frequencies
-
-        for state in self.all_states():
-            atom = state.get('atom', 0)
-            key = next((k for k in state if k != 'atom'), None)
-            if key is None:
-                photon_energy = 0.0
-            else:
-                m = int(key[1:]) - 1
-                n = state[key]
-                photon_energy = hbar * c * n * np.abs(ks[m])
-            self[state, state] = photon_energy + self.atom_index(atom) * w
-
-    def interaction(self):
-        hbar, c = self.config.hbar, self.config.c
-        w, ks, x = self.config.w_atom, self.config.frequencies, self.config.x_atom
-
-        for ket, bra in product(self.all_states(), repeat=2):
-            if self.transition_possible(ket, bra):
-                sign = self.transition_sign(ket, bra)
-                trans_index = self.transition_location(ket, bra)
-                eigenvalue = np.sqrt(max(bra.get(f'n{trans_index+1}', 0),
-                                         ket.get(f'n{trans_index+1}', 0)))  # eigenvalue of the bosonic operator
-
-                self[ket, bra] = hbar * self.g(ks[trans_index]) * eigenvalue * np.exp(sign * 1j * ks[trans_index] * x)
-
-
-class HamiltonianAtom(AtomBasis, Hamiltonian):
-    # state: |n_m, n_atom ; s>
-
-    def free(self):
-        hbar, c = self.config.hbar, self.config.c
-        w, ks = self.config.w_atom, self.config.frequencies
-
-        for state in self.all_states():
-            n_atom = state.get("n_atom", 0)
-            atom = state.get('atom', 0)
-            key = next((k for k in state if k not in ['atom', 'n_atom']), None)
-            if key is None:
-                photon_energy = 0.0
-            else:
-                m = int(key[1:]) - 1
-                n = state[key]
-                photon_energy = hbar * c * n * np.abs(ks[m])
-            self[state, state] = photon_energy + hbar * n_atom * np.abs(w) + self.atom_index(atom) * w
-
-    def transition_sign(self, ket, bra) -> int:
-        # Atom gains -> +, atom loses -> -
-        photon_diffs = [
-          ket.get(f'n{m+1}', 0) - bra.get(f'n{m+1}', 0)
-          for m in range(self.config.modes)
-        ]
-        photon_diffs.append(ket.get('n_atom', 0) - bra.get('n_atom', 0))
-
-        nonzero_diffs = [d for d in photon_diffs if d != 0]
-        assert len(nonzero_diffs) == 1 and abs(nonzero_diffs[0]) == 1, f"Invalid transition {bra} -> {ket}"
-        return nonzero_diffs[0]
-
-    def transition_location(self, ket, bra):
-        photon_diffs = [
-            ket.get(f'n{m + 1}', 0) - bra.get(f'n{m + 1}', 0)
-            for m in range(self.config.modes)
-        ]
-        photon_diffs.append(ket.get('n_atom', 0) - bra.get('n_atom', 0))
-        nonzero_diffs = [(i,d) for i, d in enumerate(photon_diffs) if d != 0]
-        return nonzero_diffs[0][0]
-
-    def transition_possible(self, ket, bra) -> bool:
-        photon_diffs = [
-          ket.get(f'n{m+1}', 0) - bra.get(f'n{m+1}', 0)
-          for m in range(self.config.modes)
-        ]
-        photon_diffs.append(ket.get('n_atom', 0) - bra.get('n_atom', 0))
-
-        nonzero_diffs = [d for d in photon_diffs if d != 0]
-        atom_change = self.atom_index(ket['atom']) - self.atom_index(bra['atom'])
-
-        if atom_change == 0 or len(nonzero_diffs) != 1 :
-            return False
-        else:
-            if self.config.RWA:
-                if atom_change + nonzero_diffs[0] == 0: return True
-                else:
-                    return False
-            else: # no RWA
-                return abs(nonzero_diffs[0]) == 1
-
-    def interaction(self):
-        hbar, c = self.config.hbar, self.config.c
-        w, ks, x = self.config.w_atom, self.config.frequencies, self.config.x_atom
-
-        for ket, bra in product(self.all_states(), repeat=2):
-            if self.transition_possible(ket, bra):
-                sign = self.transition_sign(ket, bra)
-                trans_index = self.transition_location(ket, bra)
-                eigenvalue = np.sqrt(max(bra.get(f'n{trans_index+1}', 0),
-                                         ket.get(f'n{trans_index+1}', 0)))  # eigenvalue of the bosonic operator
-                k_trans = ks[trans_index] if trans_index < len(ks) else w
-
-                self[ket, bra] = hbar * self.g(k_trans) * eigenvalue * np.exp(
-                    sign * 1j * k_trans * x)
-
-class HamiltonianTotalCap(TotalCapBasis, Hamiltonian):
-    def free(self):
-        M = self.config.modes
-        hbar, c = self.config.hbar, self.config.c
-        w, ks = self.config.w_atom, self.config.frequencies
-
-        for state in self.all_states():
-            if state['atom'] == 'g':
-                self[state, state] = hbar * c * np.sum([state.get(f'n{m+1}', 0) * np.abs(ks[m]) for m in range(M)])
-            elif state['atom'] == 'e':
-                self[state, state] = hbar * (w + c * np.sum([state.get(f'n{m+1}', 0) * np.abs(ks[m]) for m in range(M)]))
-
-    def interaction(self):
-        hbar, c = self.config.hbar, self.config.c
-        ks, x = self.config.frequencies, self.config.x_atom
-
-        for ket, bra in product(self.all_states(), repeat=2):
-            if self.transition_possible(ket, bra):
-                sign = self.transition_sign(ket, bra)
-                trans_index = self.transition_location(ket, bra)
-                eigenvalue = np.sqrt(max(bra.get(f'n{trans_index+1}', 0),
-                                         ket.get(f'n{trans_index+1}', 0)))
-
-                self[ket, bra] = hbar * self.g(ks[trans_index]) * eigenvalue * np.exp(sign * 1j * ks[trans_index] * x)
-
-
-def hamiltonian(config: Config) -> qutip.Qobj:
-    # Logic to choose appropriate Hamiltonian from config
-
-    match config.truncation:
-        case "truncated":
-            h = HamiltonianTruncated(config)
-        case "truncated+atom":
-            h = HamiltonianAtom(config)
-        case "full":
-            h = HamiltonianFull(config)
-        case "full+totalcap":
-            h = HamiltonianTotalCap(config)
-
-    h.build_hamiltonian()
-    return h.to_qObj()
+    def build_hamiltonian(self, D=None):
+        D = self.param_atom["D"] if D is None else D
+        if np.iscomplexobj(D) or not np.isfinite(D):
+            raise ValueError("D must be finite and real")
+        return qutip.Qobj(self.H0 + float(D) * self.V)

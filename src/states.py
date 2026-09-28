@@ -1,370 +1,86 @@
-"""
-State vector classes for each Hamiltonian type, mirroring hamiltonians.py.
+"""Fock bases and Gaussian preparations; TLS is the last binary index."""
 
-Basis mixins (FullBasis, TruncatedBasis, AtomBasis) are the single source of
-truth for compute_dim and state_to_index; they are shared with hamiltonians.py.
-
-Each State class can be initialised as a NumberState or CoherentState (from
-utilities), and takes a vector ck (len=modes, norm=1) of per-mode coefficients,
-allowing Gaussian wavepacket initialisation as a superposition over modes.
-"""
+from itertools import combinations_with_replacement, product
+from math import factorial
 
 import numpy as np
-from math import factorial, comb
-from abc import ABC, abstractmethod
-from itertools import product as iterproduct
-from typing import Optional
-
 import qutip
-from utilities import Config, NumberState, CoherentState, StateType
 
-
-def _coherent_coeff(alpha: complex, n: int) -> complex:
-    """Fock coefficient <n|alpha> = e^{-|alpha|²/2} * alpha^n / sqrt(n!)"""
-    return np.exp(-abs(alpha) ** 2 / 2) * alpha ** n / np.sqrt(factorial(n))
-
-
-# ---------------------------------------------------------------------------
-# Basis mixins: single source of truth for dimension and indexing
-# Python mixin behaviour: self refers to concrete instance
-# ---------------------------------------------------------------------------
-
-class FullBasis:
-    """Basis for HamiltonianFull / StateFull: unconstrained Fock space up to N."""
-
-    def __new__(cls, *args, **kwargs):
-        if cls is FullBasis:
-            raise TypeError("FullBasis is a mixin and cannot be instantiated directly")
-        return super().__new__(cls)
-
-    def compute_dim(self) -> int:
-        return 2 * (self.config.excitation_cap + 1) ** self.config.modes
-
-    def state_to_index(self, state: dict) -> int:
-        M, N = self.config.modes, self.config.excitation_cap
-        idx = 0
-        for m in range(M):
-            idx = idx * (N + 1) + state.get(f'n{m+1}', 0)
-        return idx * 2 + self.atom_index(state.get('atom', 'g'))
-
-    def all_states(self):
-        photon_range = range(self.config.excitation_cap + 1)
-        for *ns, atom in iterproduct(*[photon_range] * self.config.modes, ['g', 'e']):
-            yield {f'n{m + 1}': ns[m] for m in range(self.config.modes)} | {'atom': atom}
-
-class TruncatedBasis:
-    """Basis for HamiltonianTruncated / StateTruncated: vacuum + single-mode excitations."""
-
-    def __new__(cls, *args, **kwargs):
-        if cls is TruncatedBasis:
-            raise TypeError("TruncatedBasis is a mixin and cannot be instantiated directly")
-        return super().__new__(cls)
-
-    def compute_dim(self) -> int:
-        return 2 * (self.config.modes * self.config.excitation_cap + 1)
-
-    def state_to_index(self, state: dict) -> int:
-        N, M = self.config.excitation_cap, self.config.modes
-        idx = 0
-        for m in range(M):
-            n = state.get(f'n{m+1}', 0)
-            if n != 0:
-                idx = N * m + n
-                break
-        return idx * 2 + self.atom_index(state.get('atom', 'g'))
-
-    def all_states(self):
-        N = self.config.excitation_cap
-        M = self.config.modes
-
-        # Photon vacuum (yielded once, not once per mode)
-        for atom in ['g', 'e']:
-            yield {'atom': atom}
-        # Single-mode excitations
-        for m in range(M):
-            for n in range(1, N + 1):
-                for atom in ['g', 'e']:
-                    yield {f'n{m+1}': n, 'atom': atom}
-
-class AtomBasis:
-    """Basis for HamiltonianAtom / StateAtom: TruncatedBasis extended with n_atom oscillator."""
-
-    def __new__(cls, *args, **kwargs):
-        if cls is AtomBasis:
-            raise TypeError("AtomBasis is a mixin and cannot be instantiated directly")
-        return super().__new__(cls)
-
-    def compute_dim(self) -> int:
-        N, M = self.config.excitation_cap, self.config.modes
-        return 2 * (M * N + 1) * (N + 1)
-
-    def state_to_index(self, state: dict) -> int:
-        N, M = self.config.excitation_cap, self.config.modes
-        n_atom = state.get('n_atom', 0)
-        idx = n_atom  # vacuum photon sector: indices 0..N
-        for m in range(M):
-            n = state.get(f'n{m+1}', 0)
-            if n != 0:
-                idx = (N + 1) + m * N * (N + 1) + (n - 1) * (N + 1) + n_atom
-                break
-        return idx * 2 + self.atom_index(state.get('atom', 'g'))
-
-    def all_states(self):
-        N = self.config.excitation_cap
-        M = self.config.modes
-
-        # Photon vacuum sector (n_atom varies); yielded once, not once per mode
-        for n_atom in range(N + 1):
-            for atom in ['g', 'e']:
-                yield {'n_atom': n_atom, 'atom': atom}
-        # Single-mode excitations
-        for m in range(M):
-            for n in range(1, N + 1):
-                for n_atom in range(N + 1):
-                    for atom in ['g', 'e']:
-                        yield {f'n{m+1}': n, 'n_atom': n_atom, 'atom': atom}
-
-
-def _compositions(n, k):
-    """All ordered k-tuples of non-negative integers summing to n."""
-    if k == 1:
-        yield (n,)
-        return
-    for i in range(n + 1):
-        for rest in _compositions(n - i, k - 1):
-            yield (i,) + rest
-
-
-class TotalCapBasis:
-    """Basis for HamiltonianTotalCap / StateTotalCap: all Fock states with total photon number ≤ N.
-
-    dim = 2 * C(N + M, M)  (polynomial in both N and M, unlike FullBasis which is (N+1)^M).
-    """
-
-    def __new__(cls, *args, **kwargs):
-        if cls is TotalCapBasis:
-            raise TypeError("TotalCapBasis is a mixin and cannot be instantiated directly")
-        return super().__new__(cls)
-
-    def compute_dim(self) -> int:
-        N, M = self.config.excitation_cap, self.config.modes
-        return 2 * comb(N + M, M)
-
-    def state_to_index(self, state: dict) -> int:
-        if not hasattr(self, '_totalcap_index_map'):
-            self._totalcap_index_map = {
-                (tuple(s.get(f'n{m+1}', 0) for m in range(self.config.modes)), s['atom']): i
-                for i, s in enumerate(self.all_states())
-            }
-        key = (tuple(state.get(f'n{m+1}', 0) for m in range(self.config.modes)), state['atom'])
-        return self._totalcap_index_map[key]
-
-    def all_states(self):
-        N, M = self.config.excitation_cap, self.config.modes
-        for total in range(N + 1):
-            for ns in _compositions(total, M):
-                for atom in ['g', 'e']:
-                    yield {f'n{m+1}': ns[m] for m in range(M)} | {'atom': atom}
-
-# ---------------------------------------------------------------------------
-# State base and concrete classes
-# ---------------------------------------------------------------------------
-
-class State(ABC):
-    def __init__(self, config: Config, state_type: StateType):
-        self.config = config
-        self.state_type = state_type
-        self.ck = self.calculate_ck(config)
-        self.v = np.zeros(self.compute_dim(), dtype=complex)
-        self.build_vector()
-
-    @staticmethod
-    def calculate_ck(config) -> list[complex]:
-        ck = [np.exp(- 0.5 * config.sigma_photon ** 2 * (config.frequencies[n] - config.k_photon) ** 2) * np.exp(- 1j * config.frequencies[n] * config.x_photon)
-              for n in range(config.modes)]
-        return ck / np.linalg.norm(ck)
-
-    @abstractmethod
-    def compute_dim(self) -> int: ...
-
-    @abstractmethod
-    def state_to_index(self, state: dict) -> int: ...
-
-    @abstractmethod
-    def build_vector(self): ...
-
-    def atom_index(self, atom: str) -> int:
-        return 1 if atom == "e" else 0
-
-    @classmethod
-    def from_vector(cls, config: Config, v: np.ndarray) -> 'State':
-        """Initialise directly from a pre-computed coefficient vector.
-
-        Bypasses state_type / calculate_ck / build_vector entirely.
-        The vector is normalised before storage.
-        """
-        obj = object.__new__(cls)
-        obj.config = config
-        obj.state_type = None
-        obj.ck = None
-        obj.v = np.array(v, dtype=complex)
-        obj.v /= np.linalg.norm(obj.v)
-        return obj
-
-    def to_qobj(self) -> qutip.Qobj:
-        return qutip.Qobj(self.v)
-
-    def photon_density_matrix(self) -> np.ndarray:
-        """Reduced density matrix of the photon field, tracing over the atom.
-
-        ρ_photon[k, k'] = Σ_s c_{k,s} * conj(c_{k',s})
-                        = outer(v_g, v_g*) + outer(v_e, v_e*)
-        Result is (dim//2 x dim//2), with photon states indexed as in state_to_index // 2.
-        """
-        v_g = self.v[0::2]
-        v_e = self.v[1::2]
-        return np.outer(v_g, v_g.conj()) + np.outer(v_e, v_e.conj())
-
-    def atom_density_matrix(self) -> np.ndarray:
-        """2x2 reduced density matrix of the atom, tracing over photon degrees of freedom.
-
-        All bases store atom as the lowest index bit (idx*2 + atom_index), so
-        v[0::2] = ground amplitudes, v[1::2] = excited amplitudes for any basis.
-        Rows/cols ordered as [g, e].
-        """
-        v_g = self.v[0::2]
-        v_e = self.v[1::2]
-        return np.array([
-            [v_g @ v_g.conj(), v_g @ v_e.conj()],
-            [v_e @ v_g.conj(), v_e @ v_e.conj()]
-        ])
-
-    # get item: val = H[{state_1}, {state_2}]
-    def __getitem__(self, s: dict) -> complex:
-        return self.v[self.state_to_index(s)]
-
-    # set item: H[{state_1}, {state_2}] = val
-    def __setitem__(self, s: dict, value: complex):
-        self.v[self.state_to_index(s)] = value
-
-
-class StateFull(FullBasis, State):
-    def build_vector(self):
-        M, N = self.config.modes, self.config.excitation_cap
-        atom_coeffs = self.config.atom_coeffs
-
-        if isinstance(self.state_type, NumberState):
-            n = self.state_type.number
-            for m in range(M):
-                base = {f'n{mm+1}': (n if mm == m else 0) for mm in range(M)}
-                for atom, a_coeff in atom_coeffs.items():
-                    self.v[self.state_to_index(base | {'atom': atom})] += self.ck[m] * a_coeff
-
-        elif isinstance(self.state_type, CoherentState):
-            # Product coherent state: (x)_m |alpha * ck[m]>  x  |atom>
-            alpha = self.state_type.alpha
-            for *ns, atom in iterproduct(*[range(N + 1)] * M, ['g', 'e']):
-                a_coeff = atom_coeffs.get(atom, 0)
-                if a_coeff == 0:
-                    continue
-                coeff = a_coeff * np.prod([_coherent_coeff(alpha * self.ck[m], ns[m]) for m in range(M)])
-                state = {f'n{m+1}': ns[m] for m in range(M)} | {'atom': atom}
-                self.v[self.state_to_index(state)] += coeff
-
-        self.v /= np.linalg.norm(self.v)
-
-class StateTruncated(TruncatedBasis, State):
-    def build_vector(self):
-        N, M = self.config.excitation_cap, self.config.modes
-        atom_coeffs = self.config.atom_coeffs
-
-        if isinstance(self.state_type, NumberState):
-            n = self.state_type.number
-            for m in range(M):
-                for atom, a_coeff in atom_coeffs.items():
-                    state = {f'n{m+1}': n, 'atom': atom}
-                    self.v[self.state_to_index(state)] += self.ck[m] * a_coeff
-
-        elif isinstance(self.state_type, CoherentState):
-            # Project product coherent state onto truncated subspace:
-            #   <0|psi>   = exp(-|alpha|^2 / 2)
-            #   <n_m|psi> = (alpha*ck[m])^n / sqrt(n!) * exp(-|alpha|^2 / 2)
-            alpha = self.state_type.alpha
-            vac_amp = np.exp(-abs(alpha) ** 2 / 2)
-            for atom, a_coeff in atom_coeffs.items():
-                if a_coeff == 0:
-                    continue
-                self.v[self.state_to_index({'atom': atom})] += a_coeff * vac_amp
-                for m in range(M):
-                    alpha_m = alpha * self.ck[m]
-                    for n in range(1, N + 1):
-                        coeff = alpha_m ** n / np.sqrt(factorial(n)) * vac_amp
-                        state = {f'n{m+1}': n, 'atom': atom}
-                        self.v[self.state_to_index(state)] += a_coeff * coeff
-
-        self.v /= np.linalg.norm(self.v)
-
-class StateAtom(AtomBasis, State):
-    def build_vector(self):
-        N, M = self.config.excitation_cap, self.config.modes
-        atom_coeffs = self.config.atom_coeffs
-
-        if isinstance(self.state_type, NumberState):
-            n = self.state_type.number
-            for m in range(M):
-                for atom, a_coeff in atom_coeffs.items():
-                    state = {f'n{m+1}': n, 'n_atom': 0, 'atom': atom}
-                    self.v[self.state_to_index(state)] += self.ck[m] * a_coeff
-
-        elif isinstance(self.state_type, CoherentState):
-            # Same projection as StateTruncated; n_atom initialised in vacuum
-            alpha = self.state_type.alpha
-            vac_amp = np.exp(-abs(alpha) ** 2 / 2)
-            for atom, a_coeff in atom_coeffs.items():
-                if a_coeff == 0:
-                    continue
-                self.v[self.state_to_index({'n_atom': 0, 'atom': atom})] += a_coeff * vac_amp
-                for m in range(M):
-                    alpha_m = alpha * self.ck[m]
-                    for n in range(1, N + 1):
-                        coeff = alpha_m ** n / np.sqrt(factorial(n)) * vac_amp
-                        state = {f'n{m+1}': n, 'n_atom': 0, 'atom': atom}
-                        self.v[self.state_to_index(state)] += a_coeff * coeff
-
-            self.v /= np.linalg.norm(self.v)
-
-class StateTotalCap(TotalCapBasis, State):
-    def build_vector(self):
-        M, N = self.config.modes, self.config.excitation_cap
-        atom_coeffs = self.config.atom_coeffs
-
-        if isinstance(self.state_type, NumberState):
-            n = self.state_type.number
-            for m in range(M):
-                base = {f'n{mm+1}': (n if mm == m else 0) for mm in range(M)}
-                for atom, a_coeff in atom_coeffs.items():
-                    self.v[self.state_to_index(base | {'atom': atom})] += self.ck[m] * a_coeff
-
-        elif isinstance(self.state_type, CoherentState):
-            alpha = self.state_type.alpha
-            for state in self.all_states():
-                atom = state['atom']
-                a_coeff = atom_coeffs.get(atom, 0)
-                if a_coeff == 0:
-                    continue
-                coeff = a_coeff * np.prod([_coherent_coeff(alpha * self.ck[m], state.get(f'n{m+1}', 0)) for m in range(M)])
-                self.v[self.state_to_index(state)] += coeff
-
-        self.v /= np.linalg.norm(self.v)
-
-
-def state(config: Config, v: Optional[np.ndarray] = None) -> qutip.Qobj:
-    cls = {
-        "truncated": StateTruncated,
-        "truncated+atom": StateAtom,
-        "full": StateFull,
-        "full+totalcap": StateTotalCap,
-    }[config.truncation]
-    if v is not None:
-        return cls.from_vector(config, v).to_qobj()
-    return cls(config, config.state).to_qobj()
+from .grid import integer
+
+
+class FockBasis:
+    def __init__(self, modes, cap, truncation):
+        self.modes = modes = integer(modes, "modes", minimum=1)
+        self.cap = cap = integer(cap, "n_max")
+        self.truncation = truncation
+        vacuum = (0,) * modes
+        if truncation == "truncated":
+            field_states = [vacuum]
+            for m in range(modes):
+                for n in range(1, cap + 1):
+                    occupation = list(vacuum)
+                    occupation[m] = n
+                    field_states.append(tuple(occupation))
+        elif truncation == "full+totalcap":
+            field_states = []
+            for total in range(cap + 1):
+                for occupied in combinations_with_replacement(range(modes), total):
+                    field_states.append(tuple(np.bincount(occupied, minlength=modes)))
+        elif truncation == "full":
+            field_states = list(product(range(cap + 1), repeat=modes))
+        else:
+            raise ValueError(f"Unknown truncation: {truncation}")
+        self.states = field_states
+        self.index = {occupation: i for i, occupation in enumerate(field_states)}
+        self.photon_numbers = np.array([sum(n) for n in field_states])
+        self.dim = 2 * len(field_states)
+
+
+def initial_state(basis, k_tab, param_photon, param_atom):
+    """Project a preparation onto the basis and normalize it once."""
+    k0, sigma = float(param_photon["k_0"]), float(param_photon["sigma_k"])
+    x0 = float(param_photon["x_0"])
+    if not np.isfinite([k0, sigma, x0]).all() or sigma <= 0:
+        raise ValueError("k_0 and x_0 must be finite; sigma_k must be finite and positive")
+    k_tab = np.asarray(k_tab, dtype=float)
+    exponent = -(k_tab - k0) ** 2 / (4 * sigma ** 2)
+    packet = np.exp(exponent - exponent.max()) * np.exp(-1j * k_tab * x0)
+    packet /= np.linalg.norm(packet)
+    atom = param_atom.get("initial_state", "g")
+    atom_coeffs = {"g": (1, 0), "e": (0, 1),
+                   "+": (1 / np.sqrt(2), 1 / np.sqrt(2)),
+                   "-": (1 / np.sqrt(2), -1 / np.sqrt(2))}
+    if atom not in atom_coeffs:
+        raise ValueError("initial_state must be g, e, +, or -")
+    atom_vector = np.asarray(atom_coeffs[atom], dtype=complex)
+    vector = np.zeros(basis.dim, dtype=complex)
+    kind = param_photon.get("state", "number")
+    if kind == "number":
+        number = integer(param_photon.get("n", 1), "n")
+        if number > basis.cap:
+            raise ValueError("n must satisfy 0 <= n <= n_max")
+        if number == 0:
+            i = basis.index[(0,) * basis.modes]
+            vector[2 * i:2 * i + 2] = atom_vector
+        else:
+            for m, amplitude in enumerate(packet):
+                occupation = [0] * basis.modes
+                occupation[m] = number
+                i = basis.index[tuple(occupation)]
+                vector[2 * i:2 * i + 2] = amplitude * atom_vector
+    elif kind == "coherent":
+        alpha = complex(param_photon.get("alpha", 1.0))
+        if not np.isfinite(alpha):
+            raise ValueError("alpha must be finite")
+        for i, occupation in enumerate(basis.states):
+            coefficient = 1.0 + 0j
+            for m, n in enumerate(occupation):
+                coefficient *= (alpha * packet[m]) ** n / np.sqrt(float(factorial(n)))
+            vector[2 * i:2 * i + 2] = coefficient * atom_vector
+    else:
+        raise ValueError("state must be number or coherent")
+    norm = np.linalg.norm(vector)
+    if not np.isfinite(norm) or norm == 0:
+        raise ValueError("The projected initial state cannot be normalized")
+    return qutip.Qobj(vector / norm)

@@ -1,3 +1,4 @@
-"""Shared sys.path setup so all test files can import from src/."""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+"""Import the repository package, not a second top-level module tree."""
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))

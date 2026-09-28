@@ -38,7 +38,7 @@ coverage.xml
 /results/
 /results_Uri/
 /energy_results/
-/codex/code/results/
+/documentation/.build/
 
 # LaTeX intermediate files (keep sources and PDF documents)
 *.aux

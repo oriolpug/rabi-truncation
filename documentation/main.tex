@@ -1,0 +1,1754 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{lmodern,amsmath,amssymb,mathtools,bm}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{booktabs,longtable,array,listings,xcolor}
+\usepackage[hidelinks]{hyperref}
+\newcommand{\ket}[1]{\left|#1\right\rangle}
+\newcommand{\bra}[1]{\left\langle#1\right|}
+\newcommand{\braket}[2]{\left\langle#1\middle|#2\right\rangle}
+\newcommand{\Tr}{\operatorname{Tr}}
+\newcommand{\ii}{\mathrm{i}}
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\B}{\mathcal B}
+\newcommand{\K}{\mathcal K}
+\lstset{language=Python,basicstyle=\ttfamily\scriptsize,numbers=left,
+ numberstyle=\tiny\color{gray},breaklines=true,columns=fullflexible,
+ keepspaces=true,showstringspaces=false,frame=single,tabsize=4}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{5pt}
+\setlength{\emergencystretch}{2em}
+\setcounter{tocdepth}{2}
+\title{Multimode Rabi dynamics:\\finite models, experiments and patch analysis}
+\author{Documentation of the \texttt{rabi-truncation} repository}
+\date{28 September 2026}
+\begin{document}
+\maketitle
+\begin{abstract}
+The repository evolves pure states with one shared engine, enumerated photon
+occupation bases and sparse Hamiltonians. This document specifies the finite
+models actually solved, derives their preparation and measurement formulas,
+explains the common-space embedding used for fidelities, and documents the
+Python and notebook interfaces. The comparison with the student implementation
+separates unitary changes of convention, changes of the finite physical model,
+and corrections to numerical comparisons. Numbered source listings are followed
+by comments tied to their current lines. The common \code{full} space used for
+overlaps is implicit; choosing a separately propagated comparison trajectory
+does not require propagating or allocating that ambient space.
+\end{abstract}
+\tableofcontents
+
+\section{Finite model, state preparation and calculated quantities}
+\subsection{Periodic grid, parameter controls and photon spaces}
+\paragraph{Notation and units.}
+Throughout, $\hbar=c=1$. Length and time have inverse-energy units.
+The TLS energy origin is its ground state: its free Hamiltonian is
+$\omega_0\ket e\bra e$, rather than $\omega_0\sigma_z/2$.
+These differ by a scalar, which matters when reporting an absolute energy.
+The symbols used below are:
+\begin{longtable}{p{.18\textwidth}p{.73\textwidth}}
+\toprule Symbol & Meaning in the implementation\\\midrule\endhead
+$L$ & Periodic box length, supplied in \code{param_atom}.\\
+$k_m,\omega_m$ & Signed momentum and nonnegative frequency $\omega_m=|k_m|$.\\
+$M$ & Number of retained modes; after selection this means the selected
+count, unless explicitly described as the base-grid count.\\
+$N,B,d$ & \code{n_max}, number of photon configurations, and joint ket
+dimension $d=2B$.\\
+$\bm n,\nu$ & Occupation tuple and total photon number $\nu=\sum_m n_m$.\\
+$D,f_m,u_m$ & Physical coupling, chosen profile and complex annihilation
+coefficient, defined in equation~\eqref{eq:H}.\\
+$k_0,\sigma_k,x_0$ & Packet momentum centre, width convention and initial
+Fourier position parameter.\\
+$x_{\mathrm{tls}}$ & Parameter in the imposed annihilation phase;
+its plotted interaction coordinate is derived in equation~\eqref{eq:position}.\\
+$T,\code{dt},N_t$ & Final time, nominal output spacing and number of
+output times, including both endpoints.\\
+\bottomrule
+\end{longtable}
+\paragraph{Grid and the two controls.}
+For a periodic box of length $L>0$,
+\begin{equation}
+ \varphi_j(x)=\frac{e^{\ii k_jx}}{\sqrt L},\qquad
+ \Delta k=\frac{2\pi}{L},\qquad k_j=j\Delta k,\quad j\in\mathbb Z,
+ \qquad \omega_j=|k_j|.
+ \label{eq:grid}
+\end{equation}
+Indeed, $\varphi_j(x+L)=\varphi_j(x)$ and
+$\int_{x_*}^{x_*+L}\varphi_j^*\varphi_\ell\,dx=\delta_{j\ell}$.
+Signed momenta enter spatial phases; their absolute values enter the dispersion
+and square-root profile. Modes are sorted by signed momentum. There is no
+automatic deletion of the zero mode.
+
+When \code{CTRL_M_EXPLICIT=True}, the inputs are $L$ and a positive odd
+integer $M$. Setting $J=(M-1)/2$ gives
+\begin{equation}
+ \K_M=\{j\Delta k:-J\leq j\leq J\},\quad |\K_M|=M,
+ \quad k_{\mathrm{IR,eff}}=0,\quad
+ k_{\mathrm{UV,eff}}=\frac{M-1}{2}\Delta k.
+ \label{eq:explicit}
+\end{equation}
+The cutoff dictionary is inactive. An even $M$ raises \code{ValueError};
+it is never rounded, decremented or made asymmetric. $M=1$ gives
+$\K=\{0\}$, not a resonant single-mode cavity at $\omega_0$.
+Booleans and floating-point values, including \code{5.0}, are rejected as
+mode-count inputs; Python and NumPy integer types are accepted.
+
+When \code{CTRL_M_EXPLICIT=False}, the inputs are $L$ and finite radial
+cutoffs $0\leq k_{\mathrm{IR}}\leq k_{\mathrm{UV}}$:
+\begin{equation}
+ \K_{\mathrm{IR,UV}}=\{j\Delta k:
+ k_{\mathrm{IR}}\leq |j|\Delta k\leq k_{\mathrm{UV}}\}.
+ \label{eq:cutoffs}
+\end{equation}
+For strictly positive indices, in exact arithmetic,
+\begin{align}
+ j_{\min}&=\max\left(1,\left\lceil\frac{k_{\mathrm{IR}}}{\Delta k}\right\rceil\right),&
+ j_{\max}&=\left\lfloor\frac{k_{\mathrm{UV}}}{\Delta k}\right\rfloor,\\
+ M_{\mathrm{eff}}&=2\max(0,j_{\max}-j_{\min}+1)
+                       +\mathbf1_{k_{\mathrm{IR}}=0}.
+ \label{eq:count}
+\end{align}
+The code subtracts $10^{-12}$ before the ceiling and adds $10^{-12}$ before
+the floor, protecting numerically boundary-aligned points. This tolerance is
+on the dimensionless cutoff-to-spacing ratios. Zero is included if and only
+if the input IR equals zero exactly. A positive IR excludes it through the
+band definition even when that IR is very small. An empty band is an error.
+The resulting count can be even when zero is excluded; the odd-$M$ condition
+belongs only to the explicit-count branch.
+
+Thus specifying $L$ and $M$ implicitly fixes a UV cutoff, while specifying
+$L$ and cutoffs implicitly fixes the count. These descriptions coincide for
+a symmetric contiguous grid containing zero, but not for arbitrary selected
+subsets or positive-IR bands. Continuous cutoffs are not uniquely recoverable
+from a mode set: with IR zero, the same $\K_M$ is obtained whenever
+\begin{equation}
+ J\Delta k\leq k_{\mathrm{UV}}<(J+1)\Delta k
+ \label{eq:uvinterval}
+\end{equation}
+in exact arithmetic. The estimator reports effective radial extrema, without
+claiming that the requested cutoff originally equalled an extremum. It reports
+the smallest nonzero momentum separately: effective IR zero does not mean
+zero spacing between the nonzero modes.
+
+\paragraph{Additional mode selection.}
+Selection is applied after the base grid is resolved. With
+$w_p=\code{photon_window}$ and $w_a=\code{atom_window}$ it retains the union
+\begin{equation}
+ |k-k_0|\leq w_p\sigma_k\quad\text{or}\quad
+ |k-\omega_0|\leq w_a\sigma_k\quad\text{or}\quad
+ |k+\omega_0|\leq w_a\sigma_k.
+ \label{eq:selection}
+\end{equation}
+Each comparison has an absolute $10^{-12}$ momentum tolerance. Each
+individually empty window adds its nearest available mode; ties select the
+first mode in the sorted array. A zero-radius window therefore still retains
+a nearest mode without an exact resonance. Factors must be finite and
+nonnegative. Selection can yield asymmetry, holes, an even selected count,
+or no zero mode. These follow from the requested windows, not a hidden
+modification of the base-grid convention.
+
+The packet is then rebuilt and normalized on the selected grid. A comparison
+therefore tests both preparation and dynamics. For a selected subset
+$S\subseteq\K$, with $c_m$ the normalized unselected packet,
+\begin{equation}
+ p_S=\sum_{m\in S}|c_m|^2,\qquad
+ c_m^{(S)}=c_m/\sqrt{p_S}\ (m\in S),\qquad
+ F_{\mathrm{state}}(0)=p_S,\quad F_{\mathrm{atom}}(0)=1
+ \label{eq:selectedprep}
+\end{equation}
+for identical number preparations with $1\leq n\leq N$, defined below.
+For a coherent preparation, renormalizing the selected packet also changes
+its individual mode amplitudes. The fixed-product projection formula below
+does not automatically apply across such different grids.
+
+\paragraph{Three photon bases and their ordering.}
+A photon configuration is $\bm n\in\mathbb N^M$. With $N=\code{n_max}$,
+\begin{align}
+ \B_{\mathrm{truncated}}&=\{\bm0\}\cup
+        \{n\bm e_m:1\leq m\leq M,\ 1\leq n\leq N\},\\
+ \B_{\mathrm{total}}&=\{\bm n:\textstyle\sum_m n_m\leq N\},\\
+ \B_{\mathrm{full}}&=\{\bm n:0\leq n_m\leq N\ \forall m\}.
+ \label{eq:bases}
+\end{align}
+The string names are \code{truncated}, \code{full+totalcap} and \code{full}.
+The TLS is a separate $\mathbb C^2$ factor in all three. There is no supplemental
+atomic oscillator or \code{truncated+atom} basis. At fixed grid and cap,
+\begin{equation}
+ \B_{\mathrm{truncated}}\subseteq\B_{\mathrm{total}}\subseteq\B_{\mathrm{full}}.
+\end{equation}
+The joint ket dimensions are
+\begin{align}
+ d_{\mathrm{truncated}}&=2(1+MN),&
+ d_{\mathrm{total}}&=2\binom{M+N}{N},&
+ d_{\mathrm{full}}&=2(N+1)^M.
+ \label{eq:dimensions}
+\end{align}
+Configurations with total $r$ are weak compositions of $r$ into $M$ entries,
+numbering $\binom{M+r-1}{r}$. Summing over $0\leq r\leq N$ gives
+$\binom{M+N}{N}$. At $N=0$ every basis has one vacuum and two TLS components;
+at $N=1$ truncated and total-cap coincide. For $M=1$ all three coincide.
+
+Indices are representation dependent. For $M=2,N=2$, the exact source order is:
+\begin{center}
+\begin{tabular}{c c c c}
+\toprule $i$ & \code{truncated} & \code{full+totalcap} & \code{full}\\\midrule
+0 & $(0,0)$ & $(0,0)$ & $(0,0)$\\
+1 & $(1,0)$ & $(1,0)$ & $(0,1)$\\
+2 & $(2,0)$ & $(0,1)$ & $(0,2)$\\
+3 & $(0,1)$ & $(2,0)$ & $(1,0)$\\
+4 & $(0,2)$ & $(1,1)$ & $(1,1)$\\
+5 & --- & $(0,2)$ & $(1,2)$\\
+6 & --- & --- & $(2,0)$\\
+7 & --- & --- & $(2,1)$\\
+8 & --- & --- & $(2,2)$\\\bottomrule
+\end{tabular}
+\end{center}
+Total-cap enumerates combinations of mode indices with replacement and converts
+their multiplicities to occupations. Full uses a Cartesian product with the
+last entry changing fastest. In every representation, $s=0$ denotes $g$,
+$s=1$ denotes $e$, and
+\begin{equation}
+ q=2i+s,\qquad v_{2i}=C_{i,g},\quad v_{2i+1}=C_{i,e},\qquad
+ \ket\psi=\sum_{i,s}C_{i,s}\ket{\bm n_i;s}.
+ \label{eq:index}
+\end{equation}
+An occupation-to-index dictionary supplies targets. Equal raw indices in
+different bases do not generally mean equal physical configurations.
+
+\subsection{Preparation, projected Hamiltonian and evolution}
+\paragraph{Gaussian coefficients and number preparation.}
+For $k_0,x_0\in\mathbb R$ and $\sigma_k>0$,
+\begin{equation}
+ \widetilde c_m=\exp\left[-\frac{(k_m-k_0)^2}{4\sigma_k^2}\right]
+                  e^{-\ii k_mx_0},\qquad
+ c_m=\frac{\widetilde c_m}{\sqrt{\sum_\ell|\widetilde c_\ell|^2}}.
+ \label{eq:packet}
+\end{equation}
+All selected signed modes enter. There is no right-moving-only option:
+positive $k_0$ specifies a centre, not a filter. In the continuous ideal
+Gaussian, $|\widetilde c(k)|^2$ has standard deviation $\sigma_k$.
+The actual finite-band moments are
+\begin{equation}
+ \langle k\rangle_c=\sum_m k_m|c_m|^2,\qquad
+ (\Delta k_c)^2=\sum_m(k_m-\langle k\rangle_c)^2|c_m|^2,
+\end{equation}
+and need not equal $k_0$ and $\sigma_k^2$. The code subtracts the maximum
+real exponent before exponentiation. This common positive scale cancels at
+normalization and avoids an entirely underflowed packet for a distant centre.
+
+The TLS preparation is one of
+\begin{equation}
+ \ket{a_0}\in\left\{\ket g,\ket e,
+ (\ket g+\ket e)/\sqrt2,(\ket g-\ket e)/\sqrt2\right\},
+\end{equation}
+encoded by \code{initial_state='g'}, \code{'e'}, \code{'+'} or \code{'-'}
+in the atomic dictionary, with default $g$. For \code{state='number'},
+\begin{equation}
+ \ket{\psi_0^{(n)}}=
+ \begin{cases}
+ \ket{\bm0}\otimes\ket{a_0},&n=0,\\
+ \sum_m c_m\ket{n\bm e_m}\otimes\ket{a_0},&1\leq n\leq N.
+ \end{cases}
+ \label{eq:number}
+\end{equation}
+The default is this number preparation with $n=1$. Orthogonality of the
+configurations proves normalization for $n>0$. At $n=0$ the vacuum is
+constructed once; summing it once per mode would duplicate one physical state.
+
+For $n>1$, all $n$ photons occupy one mode at a time. A Fock state of a
+collective packet mode $b^\dagger=\sum_m c_ma_m^\dagger$ would instead be
+\begin{equation}
+ \frac{(b^\dagger)^n}{\sqrt{n!}}\ket0
+ =\sum_{\sum_m n_m=n}
+       \sqrt{\frac{n!}{\prod_m n_m!}}\prod_m c_m^{n_m}\ket{\bm n}.
+ \label{eq:collective}
+\end{equation}
+For two modes and $n=2$, this has amplitudes
+$c_1^2,\sqrt2c_1c_2,c_2^2$ on $(2,0),(1,1),(0,2)$; the implementation has
+$c_1,c_2$ on $(2,0),(0,2)$ only. The historical preparation is preserved,
+so higher-$n$ results must use its actual definition.
+
+\paragraph{Coherent projection and its retained weight.}
+For \code{state='coherent'}, $\alpha$ is finite and complex, and
+\begin{equation}
+ \ket{\boldsymbol\alpha}=\bigotimes_m\ket{\alpha c_m},\qquad
+ b_{\bm n}=e^{-|\alpha|^2/2}
+          \prod_m\frac{(\alpha c_m)^{n_m}}{\sqrt{n_m!}}.
+ \label{eq:coherentcoeff}
+\end{equation}
+The total unprojected mean photon number is $\lambda=|\alpha|^2$, with
+individual means $\lambda_m=\lambda|c_m|^2$ and $\sum_m\lambda_m=\lambda$.
+Let
+\begin{equation}
+ P_\B=\sum_{\bm n\in\B,s}\ket{\bm n;s}\bra{\bm n;s},\qquad
+ Z_\B=\sum_{\bm n\in\B}|b_{\bm n}|^2.
+\end{equation}
+The actual prepared ket is
+\begin{equation}
+ \ket{\psi_{0,\B}}=
+ \frac{P_\B(\ket{\boldsymbol\alpha}\otimes\ket{a_0})}{\sqrt{Z_\B}}.
+ \label{eq:coherent}
+\end{equation}
+The common exponential prefactor is not evaluated in the source because it
+cancels on normalization. With $E_N(z)=\sum_{r=0}^N z^r/r!$,
+\begin{align}
+ Z_{\mathrm{full}}&=e^{-\lambda}\prod_m E_N(\lambda_m),\\
+ Z_{\mathrm{total}}&=e^{-\lambda}E_N(\lambda),\\
+ Z_{\mathrm{truncated}}&=e^{-\lambda}
+       \left[1+\sum_m\big(E_N(\lambda_m)-1\big)\right].
+ \label{eq:weights}
+\end{align}
+The total-cap formula follows from the multinomial identity
+\begin{equation}
+ \sum_{\sum_m n_m=r}\prod_m\frac{\lambda_m^{n_m}}{n_m!}
+       =\frac{(\sum_m\lambda_m)^r}{r!}=\frac{\lambda^r}{r!}.
+\end{equation}
+Truncated counts vacuum once and nonzero occupations on each mode ray.
+Consequently $0<Z_{\mathrm{truncated}}\leq Z_{\mathrm{total}}
+\leq Z_{\mathrm{full}}\leq1$. At $\alpha=0$ all weights equal one.
+If several $\lambda_m$ are nonzero, increasing $N$ in truncated alone
+approaches $e^{-\lambda}[1+\sum_m(e^{\lambda_m}-1)]$, generally below one:
+multimode occupations remain omitted at every cap.
+
+For two projections of the \emph{same} coherent product on the same grid,
+\begin{equation}
+ F_{\mathrm{state}}(0)=\frac{Z_{A\cap B}^{\,2}}{Z_AZ_B},\qquad
+ Z_{A\cap B}=\sum_{\bm n\in\B_A\cap\B_B}|b_{\bm n}|^2,
+ \qquad F_{\mathrm{atom}}(0)=1.
+ \label{eq:initialf}
+\end{equation}
+If $\B_A\subseteq\B_B$, this is $Z_A/Z_B$. For two equally weighted modes,
+$\lambda=1$ and $N=2$, the weights are $2.25/e$, $2.5/e$, and
+$2.640625/e$ for truncated, total-cap and full. Truncated versus total-cap
+therefore starts at $F_{\mathrm{state}}(0)=0.9$ before any interaction.
+All these preparations are field--TLS products, explaining their unit
+atomic fidelity and zero initial atomic entropy.
+
+\paragraph{Hamiltonian and matrix entries.}
+For finite real $D$, $\omega_0\geq0$ and finite $x_{\mathrm{tls}}$,
+\begin{align}
+ H_0&=\sum_m |k_m|a_m^\dagger a_m+\omega_0\ket e\bra e,\\
+ u_m&=\frac{\ii f_m e^{-\ii k_mx_{\mathrm{tls}}}}{\sqrt L},\qquad
+ f_m=\begin{cases}\sqrt{|k_m|},&\code{sqrt},\\1,&\code{flat},\end{cases}\\
+ H_\B&=P_\B\left[H_0+D\sum_m(u_ma_m+u_m^*a_m^\dagger)
+                         (\sigma_++\sigma_-)\right]P_\B
+       \equiv H_{0,\B}+DV_\B,
+ \label{eq:H}
+\end{align}
+where $\sigma_+=\ket e\bra g$ and $\sigma_-=\ket g\bra e$.
+The factor $\ii$ remains at zero TLS position. Creation receives the conjugate
+annihilation coefficient. Because field and TLS operators commute,
+$(u_ma_m\sigma_x)^\dagger=u_m^*a_m^\dagger\sigma_x$; the sum is Hermitian,
+and orthogonal projection preserves this property. In energy units, $D$
+is dimensionless for \code{sqrt} and has units $\sqrt{\text{energy}}$ for
+\code{flat}. Equal numerical couplings under the profiles do not describe
+the same physical model.
+
+For a source column $q=2i+s$, the assembled entries are
+\begin{align}
+ (H_0)_{2i+s,2i+s}&=\sum_m|k_m|n_{i,m}+s\omega_0,\\
+ (V_\B)_{2j+1-s,2i+s}^{(-)}&=u_m\sqrt{n_{i,m}},
+       &&\bm n_j=\bm n_i-\bm e_m,\\
+ (V_\B)_{2j+1-s,2i+s}^{(+)}&=u_m^*\sqrt{n_{i,m}+1},
+       &&\bm n_j=\bm n_i+\bm e_m\in\B.
+ \label{eq:entries}
+\end{align}
+A descending transition needs $n_{i,m}>0$. All bases are downward closed,
+so the target then exists. An ascending target is looked up and omitted if
+absent, realizing exactly $P_\B H P_\B$. No omitted target is replaced by
+another oscillator. A transition and its reverse are both retained or both
+absent, with conjugate coefficients.
+
+For example, creation in mode two from $(1,0)$ targets $(1,1)$: retained
+in total-cap/full at $N=2$, absent in truncated. Creation from $(2,0)$ into
+$(2,1)$ is retained only in full. Shared entries have identical coefficients,
+but different transition graphs can produce different dynamics.
+Projected ladder operators are not canonical at the boundary. For one mode,
+\begin{equation}
+ a_N\ket n=\sqrt n\ket{n-1},\quad a_N^\dagger\ket N=0,\qquad
+ [a_N,a_N^\dagger]=I-(N+1)\ket N\bra N.
+ \label{eq:boundary}
+\end{equation}
+A calculation can be exact for this finite model without proving convergence
+to unbounded Fock space. Assembly costs $O(Md)$, rather than scanning all pairs.
+
+\paragraph{RWA, parity and the zero mode.}
+Under RWA only annihilation with excitation and creation with de-excitation remain:
+\begin{equation}
+ H_{\B,\mathrm{RWA}}=P_\B\left[H_0+D\sum_m
+       (u_ma_m\sigma_++u_m^*a_m^\dagger\sigma_-)\right]P_\B.
+ \label{eq:rwa}
+\end{equation}
+With $\mathcal N_f=\sum_m n_m$, $\mathcal N=\mathcal N_f+\ket e\bra e$
+and $\Pi=(-1)^{\mathcal N}$,
+\begin{equation}
+ [H_{\B,\mathrm{RWA}},\mathcal N]=0,\qquad [H_\B,\Pi]=0.
+ \label{eq:symmetries}
+\end{equation}
+RWA transitions change photon and atomic excitation by opposite units.
+Counter-rotating terms change their sum by $\pm2$, preserving its parity.
+Occupation projectors commute with the diagonal symmetry operators, so these
+identities survive all three projections.
+
+For the retained zero mode and \code{sqrt},
+\begin{equation}
+ \omega(0)=f(0)=0,\qquad [H_\B,n_0]=0.
+ \label{eq:zero}
+\end{equation}
+It can carry initial norm without free energy or direct TLS coupling.
+In full, fixing $n_0=r$ leaves the same nonzero-mode Hamiltonian for each $r$.
+In total-cap the corresponding sector instead obeys
+\begin{equation}
+ \sum_{m:k_m\ne0}n_m\leq N-r.
+\end{equation}
+A conserved zero-mode occupation thus changes the available nonzero photon
+space. In truncated, positive zero-mode occupation cannot coexist with
+occupation of another mode. Deleting zero changes preparation normalization
+and these finite spaces even though $f(0)=0$. For flat, $f(0)=1$ and the zero
+mode couples, so $n_0$ is generally no longer conserved. At $N=0$ all interactions
+are projected away. At explicit $M=1$ with sqrt the only mode is zero and
+only TLS free evolution remains.
+
+\paragraph{Propagation, output sampling and numerical normalization.}
+The engine solves the time-independent equation
+\begin{equation}
+ \ii\frac{d}{dt}\ket{\psi(t)}=H_\B\ket{\psi(t)},\qquad
+ \ket{\psi(t)}=e^{-\ii H_\B t}\ket{\psi_0}.
+ \label{eq:evolution}
+\end{equation}
+The default integration method used by this engine is BDF. Relative and
+absolute tolerances are \code{rtol=1e-9} and \code{atol=1e-11}.
+Output renormalization is disabled (\code{normalize_output=False}). Output \code{dt}
+is not the adaptive solver's internal step. Nominal outputs are
+$0,\code{dt},\ldots,J\code{dt}$, $J=\lfloor T/\code{dt}\rfloor$,
+with $T$ appended if needed. Endpoint roundoff is handled at $10^{-12}$;
+both zero and exact $T$ are always included. If \code{dt} exceeds $T$, the
+list is $[0,T]$.
+
+Exact evolution conserves $\|v\|^2$ and $\langle H_\B\rangle$. The reported
+norm is the squared norm, not its square root. Coefficients, populations and
+energies are not renormalized after integration. Entropy and fidelity normalize
+internally. If $v_{\mathrm{num}}=(1+\epsilon)e^{\ii\theta}v_{\mathrm{exact}}$,
+its fidelity is one after normalization but its raw norm is $|1+\epsilon|^2$.
+Fidelity alone therefore does not certify norm accuracy.
+
+With \code{store_state=True}, solver history and coefficient arrays contain
+all outputs. With \code{store_state=False}, only the final ket and final
+coefficient arrays are retained; the output-time list still exists.
+Time-series fidelity requires both histories. Diagnostic methods accept
+\code{t=None} for all retained states, \code{t=-1} for final, or a physical
+time in $[0,T]$. With history, a time selects the nearest output without
+interpolation; a final-only run rejects earlier times. The wavefunction
+method instead takes an output \emph{index}.
+
+\subsection{Observables, exact fidelities and physical interpretation}
+\paragraph{TLS reduction and entanglement.}
+Tracing equation~\eqref{eq:index} over field configurations gives
+\begin{equation}
+ \rho_a=C^{\mathsf T}C^*,\qquad
+ (\rho_a)_{ss'}=\sum_i C_{i,s}C_{i,s'}^*,\qquad
+ P_e=\sum_i|C_{i,e}|^2,\qquad \Tr\rho_a=\|v\|^2.
+ \label{eq:rho}
+\end{equation}
+The transpose is intentionally not an adjoint: rows of $C$ are photon
+configurations and columns are TLS labels. For
+$\widehat\rho_a=\rho_a/\|v\|^2=\begin{psmallmatrix}p_g&z\\z^*&p_e\end{psmallmatrix}$,
+\begin{equation}
+ \lambda_\pm=\frac{1\pm\sqrt{(p_g-p_e)^2+4|z|^2}}2,\qquad
+ S_a=-\sum_{r=\pm}\lambda_r\log\lambda_r.
+ \label{eq:entropy}
+\end{equation}
+The logarithm is natural and $0\log0=0$, so $0\leq S_a\leq\log2$.
+For a global pure ket this measures field--TLS entanglement: zero for a
+product, maximal for a maximally mixed TLS reduction. The excited-probability
+method returns the raw diagonal of $\rho_a$, exposing normalization drift.
+
+\paragraph{Photon sectors and Fourier reconstruction.}
+Directional populations refer specifically to one photon and ground-state TLS:
+\begin{align}
+ P_{+,1g}&=\sum_{m:k_m>0}|C_{i(\bm e_m),g}|^2,&
+ P_{-,1g}&=\sum_{m:k_m<0}|C_{i(\bm e_m),g}|^2,\\
+ P_{0,1g}&=\sum_{m:k_m=0}|C_{i(\bm e_m),g}|^2,&
+ p_\nu&=\sum_{i:\sum_m n_{i,m}=\nu}\sum_s|C_{i,s}|^2.
+ \label{eq:sectors}
+\end{align}
+Their keys are \code{p_transmitted}, \code{p_reflected}, \code{p_zero_1g}
+and \code{p_<nu>_photon}. Exact sum rules are
+\begin{equation}
+ P_{+,1g}+P_{-,1g}+P_{0,1g}=P_{1g}\leq p_1,\qquad
+ \sum_\nu p_\nu=\|v\|^2.
+ \label{eq:populationchecks}
+\end{equation}
+The difference $p_1-P_{1g}$ is the one-photon, excited-TLS population.
+Photon totals range through $MN$ in full and $N$ in the other two bases.
+Directional populations vanish at $N=0$.
+
+The extracted function is
+\begin{equation}
+ \phi_{1g}(x,t)=\frac1{\sqrt L}\sum_m C_{i(\bm e_m),g}(t)e^{\ii k_mx},\qquad
+ \int_{x_*}^{x_*+L}|\phi_{1g}(x,t)|^2dx=P_{1g}(t).
+ \label{eq:wavefunction}
+\end{equation}
+This is a component of the ket, not a density of all photons in a multiphoton
+state. Its integrated weight may be less than one. The integral uses
+orthogonality from equation~\eqref{eq:grid}; a plotting mesh approximates it.
+The function is periodic. Under free evolution a positive-momentum component
+obeys $\phi(x,t)=\phi(x-t,0)$ and a negative-momentum component obeys
+$\phi(x,t)=\phi(x+t,0)$. Both directions can be present in the packet.
+
+The imposed spatial phases give, for an input in the $1g$ sector,
+\begin{align}
+ (H\psi)_{\bm0,e}
+ &=\frac{\ii D}{\sqrt L}\sum_m
+           f_mC_{i(\bm e_m),g}e^{-\ii k_mx_{\mathrm{tls}}},\\
+ \text{for \code{flat}:}\quad
+ (H\psi)_{\bm0,e}&=\ii D\phi_{1g}(-x_{\mathrm{tls}}).
+ \label{eq:position}
+\end{align}
+For sqrt the same coordinate enters the field weighted by $\sqrt{|k_m|}$.
+The scattering plot therefore marks $-x_{\mathrm{tls}}$ in its positive-Fourier
+coordinate. The parameter remains the one in the requested annihilation
+phase. Identifying it directly with the plotted coordinate would require
+the opposite annihilation-phase sign; at zero they coincide. A general
+non-RWA input can have additional contributions to this target from other sectors.
+
+\paragraph{Energy partitions and their sum rules.}
+\textbf{Start with the total energy.}
+The primary quantity is the expectation of the \emph{same projected
+Hamiltonian that generates the evolution}. No partition is needed to compute
+it. To make every index explicit, write
+\begin{align}
+ \mathcal H_\B&=\operatorname{span}
+       \{\ket{\bm n_i;s}:i=0,\ldots,B-1,\ s=0,1\},\qquad d=2B,\\
+ \ket q&\equiv\ket{\bm n_i;s},\quad q=2i+s,\qquad
+ v_q(t)=\braket{q}{\psi(t)}=C_{i,s}(t),\\
+ H_{rc}&\equiv\bra r H_\B\ket c,\qquad r,c=0,\ldots,d-1.
+ \label{eq:energy-index-definitions}
+\end{align}
+Thus $r$ labels a \emph{target basis row}, $c$ a \emph{source basis column};
+neither is a photon-mode index. Below, mode indices follow the Python arrays,
+$m=0,\ldots,M-1$; this only shifts the earlier $1,\ldots,M$ labelling.
+For an operator $A$ and an ideally normalized state, the notation is
+\begin{equation}
+ \langle A\rangle_t\equiv\bra{\psi(t)}A\ket{\psi(t)}.
+\end{equation}
+Time arguments are omitted when every quantity is evaluated at the same $t$.
+In particular,
+\begin{align}
+ E(t)&\equiv\bra{\psi(t)}H_\B\ket{\psi(t)}
+      =v(t)^\dagger H_\B v(t)\\
+     &=\sum_{r=0}^{d-1}\sum_{c=0}^{d-1}v_r^*(t)H_{rc}v_c(t)
+      =\sum_{r=0}^{d-1}v_r^*(t)(H_{\B}v(t))_r.
+ \label{eq:energy-total-definition}
+\end{align}
+The last equality is just matrix multiplication:
+$(H_{\B}v)_r=\sum_cH_{rc}v_c$. Hermiticity implies
+\begin{equation}
+ (v^\dagger H_{\B}v)^*=v^\dagger H_\B^\dagger v=v^\dagger H_{\B}v,
+ \qquad E(t)\in\mathbb R.
+ \label{eq:energy-real}
+\end{equation}
+Taking a real part in the code removes numerical imaginary roundoff; it is
+not an additional approximation to the Hermitian expectation.
+
+Here $\partial_tH_\B=0$ and $\dot\psi=-\ii H_\B\psi$, so
+\begin{align}
+ \frac{dE}{dt}
+ &=\bra{\dot\psi}H_\B\ket\psi+\bra\psi H_\B\ket{\dot\psi}\\
+ &=\ii\bra\psi H_\B^2\ket\psi-\ii\bra\psi H_\B^2\ket\psi=0,\\
+ E(t)&=E(0).
+ \label{eq:energy-conservation}
+\end{align}
+Consequently, plotting $E(t)$ is first a conservation diagnostic. It does not
+by itself show energy exchange between the free field, the TLS and the
+interaction, since those contributions may vary while their sum stays fixed.
+This conservation identity holds for each finite projected model separately;
+it does not imply that different projections produce identical trajectories.
+
+\textbf{Free and interaction operators, with the projection specified.}
+Let $I_f$ be the identity on the photon space before projection and
+$I_a=\ket g\bra g+\ket e\bra e$ the TLS identity. The joint projector is
+\begin{equation}
+ P_\B=\sum_{i=0}^{B-1}\sum_{s=0}^1\ket{\bm n_i;s}\bra{\bm n_i;s},
+ \qquad P_\B^2=P_\B=P_\B^\dagger.
+\end{equation}
+The following operators are restricted to $\mathcal H_\B$:
+\begin{align}
+ N_m&\equiv P_\B(a_m^\dagger a_m\otimes I_a)P_\B,
+       &N_m\ket{\bm n_i;s}&=n_{i,m}\ket{\bm n_i;s},\\
+ P_a^{(e)}&\equiv P_\B(I_f\otimes\ket e\bra e)P_\B,
+       &P_a^{(e)}\ket{\bm n_i;s}&=s\ket{\bm n_i;s},\\
+ H_{f,m}&\equiv\omega_mN_m,\quad\omega_m=|k_m|,
+       &H_f&\equiv\sum_{m=0}^{M-1}H_{f,m},\\
+ H_a&\equiv\omega_0P_a^{(e)},
+       &H_{0,\B}&=H_f+H_a.
+ \label{eq:energy-free-operators}
+\end{align}
+The projector $P_a^{(e)}$ is an operator; $P_e(t)$ is its scalar expectation,
+the excited population. Explicitly,
+\begin{equation}
+ P_e(t)=\langle P_a^{(e)}\rangle=\sum_i|C_{i,1}|^2,
+ \qquad \langle N_m\rangle=\sum_{i,s}n_{i,m}|C_{i,s}|^2.
+ \label{eq:energy-free-expectations}
+\end{equation}
+To remove any ambiguity about $V_m$, define it \emph{before} taking its
+expectation. The coefficients and TLS operators used here are
+\begin{equation}
+ \sigma_+=\ket e\bra g,\quad\sigma_-=\ket g\bra e,
+ \quad\sigma_x=\sigma_++\sigma_-,\qquad
+ u_m=\frac{\ii f_m e^{-\ii k_mx_{\mathrm{tls}}}}{\sqrt L},\quad
+ f_m=\begin{cases}\sqrt{|k_m|},&\code{sqrt},\\1,&\code{flat}.\end{cases}
+\end{equation}
+Without RWA the mode-labelled interaction operator is
+\begin{align}
+ V_m&\equiv P_\B\big[(u_ma_m+u_m^*a_m^\dagger)\otimes\sigma_x\big]P_\B\\
+ &=\frac{\ii f_m}{\sqrt L}P_\B
+   \big[(e^{-\ii k_mx_{\mathrm{tls}}}a_m
+        -e^{\ii k_mx_{\mathrm{tls}}}a_m^\dagger)\otimes\sigma_x\big]P_\B.
+ \label{eq:energy-Vm-definition}
+\end{align}
+Under RWA its definition is instead
+\begin{equation}
+ V_m\equiv P_\B
+     (u_ma_m\otimes\sigma_++u_m^*a_m^\dagger\otimes\sigma_-)P_\B.
+ \label{eq:energy-Vm-rwa}
+\end{equation}
+In either case,
+\begin{equation}
+ V_m^\dagger=V_m,\qquad V_\B=\sum_{m=0}^{M-1}V_m,
+ \qquad H_{\mathrm{int}}\equiv DV_\B,
+ \qquad H_\B=H_f+H_a+H_{\mathrm{int}}.
+ \label{eq:energy-H-split}
+\end{equation}
+$V_m$ is thus an \emph{operator on the joint field--TLS space}, containing
+only interactions that change occupation of photon mode $m$. It already
+contains the bosonic operators, the TLS transition, $f_m$, $L^{-1/2}$ and
+the phase including $\ii$; it does \emph{not} contain $D$. The energy term is
+$DV_m$. $V_m$ is neither an occupation number nor an energy expectation.
+Projection omits transitions whose target is outside the chosen basis,
+as in equation~\eqref{eq:entries}.
+
+For completeness, let $R=0$ without RWA and $R=1$ with RWA, and set
+\begin{equation}
+ \chi_-(s)=1-Rs,\qquad \chi_+(s)=1-R(1-s).
+ \label{eq:energy-rwa-selectors}
+\end{equation}
+These select source $s=0$ for annihilation and source $s=1$ for creation
+when RWA is active. For $r=2j+s'$ and $c=2i+s$,
+\begin{equation}
+ (V_m)_{rc}=\delta_{s',1-s}
+ \begin{cases}
+ \chi_-(s)u_m\sqrt{n_{i,m}},
+       &\bm n_j=\bm n_i-\bm e_m,\ n_{i,m}>0,\\
+ \chi_+(s)u_m^*\sqrt{n_{i,m}+1},
+       &\bm n_j=\bm n_i+\bm e_m\in\B,\\
+ 0,&\text{otherwise}.
+ \end{cases}
+ \label{eq:energy-Vm-entries}
+\end{equation}
+Here $\bm e_m$ has occupation one in mode $m$ and zero in every other mode.
+This gives an explicit matrix definition of the same operator. The reverse
+transition has the conjugate coefficient because
+$\chi_+(1-s)=\chi_-(s)$, and both targets lie in the retained basis.
+
+\textbf{The mode partition is a specified allocation of interaction energy.}
+Define the real scalar contributions
+\begin{align}
+ F_m(t)&\equiv\langle H_{f,m}\rangle
+       =\omega_m\sum_{i,s}n_{i,m}|C_{i,s}(t)|^2,\\
+ W_m(t)&\equiv\langle DV_m\rangle=Dv^\dagger V_mv,\\
+ E_a(t)&\equiv\langle H_a\rangle=\omega_0\sum_i|C_{i,1}(t)|^2,\\
+ E_f(t)&\equiv\sum_mF_m(t),\qquad
+ E_{\mathrm{int}}(t)\equiv\sum_mW_m(t).
+ \label{eq:energy-contributions}
+\end{align}
+The code's ``energy per mode'' is
+\begin{equation}
+ E_m(t)\equiv F_m(t)+W_m(t)
+     =\bra\psi(H_{f,m}+DV_m)\ket\psi,
+ \qquad \sum_mE_m(t)+E_a(t)=E(t).
+ \label{eq:energy}
+\end{equation}
+The sum rule follows by substituting the operator identity
+\eqref{eq:energy-H-split}; it is not a separately assumed conservation law.
+$F_m$ is nonnegative for a normalized state, whereas $W_m$ can have either
+sign. $E_m$ includes a field--TLS interaction and is therefore not the bare
+photon energy $\omega_m\langle N_m\rangle$.
+
+The attribution of that interaction to the mode-labelled term is a convention.
+For example, any fixed real $\lambda_m$ would also yield the exact decomposition
+\begin{equation}
+ \widetilde H_m=H_{f,m}+\lambda_mDV_m,\qquad
+ \widetilde H_a=H_a+\sum_m(1-\lambda_m)DV_m,
+ \qquad \sum_m\widetilde H_m+\widetilde H_a=H_\B.
+ \label{eq:energy-allocation}
+\end{equation}
+The implemented convention is $\lambda_m=1$. The separately displayed TLS
+energy is its \emph{bare} term $E_a$, while all interaction is in the mode
+columns. These pieces need not be individually conserved. For a fixed
+Hermitian component $A$,
+\begin{equation}
+ \frac{d}{dt}\langle A\rangle=\ii\langle[H_\B,A]\rangle,
+ \qquad \frac{d}{dt}(E_f+E_a+E_{\mathrm{int}})=0.
+ \label{eq:energy-component-evolution}
+\end{equation}
+The commutators generally do not vanish separately.
+
+\textbf{What the stored quadruple means, and the derivation of the sparse sum.}
+A sparse matrix can be represented by a list of row/column/value records.
+Here a fourth field records which mode generated the transition. Let
+$N_{\mathrm{tr}}$ be the length of that list, and define for
+$\ell=0,\ldots,N_{\mathrm{tr}}-1$
+\begin{equation}
+ (r_\ell,c_\ell,z_\ell,m_\ell),\qquad
+ z_\ell\equiv(V_{m_\ell})_{r_\ell c_\ell}.
+ \label{eq:energy-record-definition}
+\end{equation}
+This is precisely what the earlier shorthand $(r,c,V_{rc},m)$ meant:
+$r$ and $c$ are joint ket indices, $V_{rc}$ is a complex matrix coefficient
+without $D$, and $m$ is a mode label. Each off-diagonal interaction connects
+configurations differing in only one mode, so that mode is unique and the
+recorded $z_\ell$ is also the corresponding entry of $V_\B$. The record is
+not an additional physical variable or a state.
+\begin{center}
+\begin{tabular}{l l l}
+\toprule Python array entry & Mathematical symbol & Type and range\\\midrule
+\code{transition_rows[l]} & $r_\ell$ & Integer in $0,\ldots,d-1$\\
+\code{transition_cols[l]} & $c_\ell$ & Integer in $0,\ldots,d-1$\\
+\code{transition_values[l]} & $z_\ell$ & Complex coefficient of $V_\B$\\
+\code{transition_modes[l]} & $m_\ell$ & Integer in $0,\ldots,M-1$\\
+\bottomrule
+\end{tabular}
+\end{center}
+For example, for the source configuration $\bm n_i=\bm e_m$ and TLS $g$,
+annihilation to vacuum with TLS $e$ records
+\begin{equation}
+ c_\ell=2i,\qquad r_\ell=2i(\bm0)+1,\qquad
+ z_\ell=u_m,\qquad m_\ell=m.
+\end{equation}
+Here $i(\bm0)$ is the photon-vacuum index; the packet amplitude does not
+enter this stored matrix value. It enters the expectation through $v_c$.
+
+Define $\delta_{m,m_\ell}$ as one when the tags match and zero otherwise.
+The exact matrix reconstruction and its expectation are
+\begin{align}
+ V_m&=\sum_{\ell=0}^{N_{\mathrm{tr}}-1}
+           \delta_{m,m_\ell}z_\ell\ket{r_\ell}\bra{c_\ell},\\
+ v^\dagger V_mv
+ &=\sum_{\ell=0}^{N_{\mathrm{tr}}-1}\delta_{m,m_\ell}z_\ell
+          (v^\dagger\ket{r_\ell})(\bra{c_\ell}v)\\
+ &=\sum_{\ell=0}^{N_{\mathrm{tr}}-1}
+           \delta_{m,m_\ell}v_{r_\ell}^*z_\ell v_{c_\ell}.
+ \label{eq:energy-sparse-derivation}
+\end{align}
+Since $D$ is real and $V_m$ is Hermitian, its real energy contribution is
+\begin{equation}
+ \boxed{W_m(t)=\sum_{\ell=0}^{N_{\mathrm{tr}}-1}
+   \delta_{m,m_\ell}\Re\!\left[v_{r_\ell}^*(t)D z_\ell v_{c_\ell}(t)\right].}
+ \label{eq:energytriplets}
+\end{equation}
+This is the matrix expectation expanded in recorded entries. It follows
+from $v^\dagger V_mv$ and the resolution into $\ket r\bra c$; no additional
+energy formula has been postulated. For a coefficient array \code{v}, the
+equivalent NumPy operations are:
+\begin{lstlisting}
+h = experiment.hamiltonian
+D = experiment.param_atom['D']
+M = experiment.n_modes
+contributions = np.real(
+    v[h.transition_rows].conj() * D * h.transition_values
+    * v[h.transition_cols])
+interaction = np.bincount(
+    h.transition_modes, weights=contributions, minlength=M)
+\end{lstlisting}
+The second operation is the weighted \code{np.bincount} in the actual code.
+
+Both directed records of a Hermitian pair are present:
+\begin{align}
+ (r,c,z,m)&\quad\text{and}\quad(c,r,z^*,m),\\
+ v_r^*Dzv_c+v_c^*Dz^*v_r&=2\Re(v_r^*Dzv_c).
+ \label{eq:energy-reverse-pair}
+\end{align}
+Thus one can either sum both recorded directions as in
+\eqref{eq:energytriplets}, or sum one orientation and multiply its real
+part by two. Multiplying the already two-direction sum by two would be
+incorrect. Zero-valued records contribute zero.
+
+An equivalent expression makes the amplitudes and the phase explicit.
+Let $j(i,m)$ index $\bm n_i-\bm e_m$. Summing only descending records gives
+\begin{align}
+ W_m&=2D\Re\sum_{\substack{i,s\\n_{i,m}>0}}
+        \chi_-(s)u_m\sqrt{n_{i,m}}
+        C_{j(i,m),1-s}^*C_{i,s}\\
+ &=-\frac{2Df_m}{\sqrt L}\Im\sum_{\substack{i,s\\n_{i,m}>0}}
+        \chi_-(s)e^{-\ii k_mx_{\mathrm{tls}}}\sqrt{n_{i,m}}
+        C_{j(i,m),1-s}^*C_{i,s}.
+ \label{eq:energy-coherence-form}
+\end{align}
+The second line uses $\Re(\ii z)=-\Im z$. Interaction energy depends on
+relative phases and field--TLS coherences, not just occupation probabilities.
+For the fixed-number preparation \eqref{eq:number}, all amplitudes in the
+neighbouring photon totals are initially zero, so
+\begin{equation}
+ W_m(0)=0,\qquad
+ E(0)=n\sum_m\omega_m|c_m|^2+\omega_0|\braket e{a_0}|^2
+ \label{eq:energy-number-initial}
+\end{equation}
+for $n\geq1$. At $n=0$ the field term is zero. Coherent preparations can
+instead contain the coherences in \eqref{eq:energy-coherence-form} initially.
+
+\textbf{Photon-number partitions: projectors, block matrices and derivation.}
+This is a second way of partitioning the \emph{same} total energy. It does not
+refer to mode $m$. Define the photon total of a joint basis index and the
+associated projector by
+\begin{align}
+ \nu(q)&\equiv\sum_{m=0}^{M-1}n_{i,m},\qquad i=\lfloor q/2\rfloor,\\
+ Q_\nu&\equiv\sum_{q:\nu(q)=\nu}\ket q\bra q,
+ &Q_\nu\ket q&=\mathbf1_{\nu(q)=\nu}\ket q,\\
+ Q_\nu^\dagger&=Q_\nu,\quad Q_\nu Q_\mu=\delta_{\nu\mu}Q_\nu,
+ &\sum_{\nu=0}^{\nu_{\max}}Q_\nu&=I_\B.
+ \label{eq:energy-sector-projectors}
+\end{align}
+Here $I_\B$ is the identity on the retained joint space,
+$\nu_{\max}=\max_i\sum_mn_{i,m}$, equal to $N$ in total-cap/truncated and
+$MN$ in full. $Q_\nu$ selects photon number alone; it keeps both TLS states,
+so $\nu$ is not the RWA excitation number $\mathcal N$.
+Define the sector ket, its weight and the corresponding Hamiltonian blocks:
+\begin{equation}
+ \ket{\psi_\nu}=Q_\nu\ket\psi,\qquad
+ p_\nu=\braket{\psi_\nu}{\psi_\nu},\qquad
+ H_{\nu\mu}=Q_\nu H_\B Q_\mu.
+ \label{eq:energy-sector-blocks}
+\end{equation}
+In general $\psi_\nu$ is not normalized, and $H_{\nu\mu}$ maps sector $\mu$
+to sector $\nu$. Inserting the projector resolution on both sides of $H_\B$
+gives
+\begin{equation}
+ E=\sum_{\nu,\mu}\bra{\psi_\nu}H_\B\ket{\psi_\mu}.
+ \label{eq:energy-block-sum}
+\end{equation}
+The terms with $\nu\ne\mu$ must not be discarded: they are coherences
+between photon sectors, and the interaction changes photon total by one.
+Specifically,
+\begin{equation}
+ Q_\nu H_{0,\B}Q_\mu=0\quad(\nu\ne\mu),\qquad
+ Q_\nu V_\B Q_\nu=0,\qquad
+ Q_\nu V_\B Q_\mu=0\quad(|\nu-\mu|\ne1).
+ \label{eq:energy-block-selection}
+\end{equation}
+These identities hold with or without RWA; the TLS selection rules change,
+but each retained interaction still creates or annihilates one photon.
+
+The implemented row-based energy assigns to sector $\nu$
+\begin{equation}
+ E_\nu\equiv\Re\bra\psi Q_\nu H_\B\ket\psi
+        =\sum_{q:\nu(q)=\nu}\Re[v_q^*(H_{\B}v)_q].
+ \label{eq:energy-sector-row-definition}
+\end{equation}
+Why the real part, and why this operator ordering? The projector acts on the
+\emph{row} of the matrix product, giving the rightmost sum. Since $Q_\nu$
+and $H_\B$ need not commute, $Q_\nu H_\B$ is not generally Hermitian. Let
+$z_\nu=\bra\psi Q_\nu H_\B\ket\psi$; then
+\begin{equation}
+ z_\nu^*=\bra\psi (Q_\nu H_\B)^\dagger\ket\psi
+         =\bra\psi H_\B Q_\nu\ket\psi,\qquad
+ \Re z_\nu=\tfrac12(z_\nu+z_\nu^*).
+\end{equation}
+Consequently this row formula is exactly the expectation of the Hermitian
+operator $A_\nu$ defined below:
+\begin{align}
+ A_\nu&\equiv\tfrac12(Q_\nu H_\B+H_\B Q_\nu),
+ &A_\nu^\dagger&=A_\nu,\\
+ E_\nu&=\bra\psi A_\nu\ket\psi,
+ &\sum_\nu A_\nu&=\tfrac12(I_\B H_\B+H_\B I_\B)=H_\B,\\
+ \sum_\nu E_\nu&=E.
+ \label{eq:energysectors}
+\end{align}
+This proves the sum rule at the operator level, before considering a
+particular ket or numerical trajectory. It is a symmetric allocation of
+cross-sector matrix elements, not an assumption that energy is diagonal
+in photon number.
+
+To display what each sector actually contains, define
+\begin{align}
+ F_\nu&\equiv\bra{\psi_\nu}H_{0,\B}\ket{\psi_\nu}
+       =\sum_{q:\nu(q)=\nu}\epsilon_q|v_q|^2,\\
+ \epsilon_q&\equiv\sum_m\omega_mn_{i,m}+s\omega_0,\qquad q=2i+s,\\
+ K_{\nu\mu}&\equiv\Re\bra{\psi_\nu}DV_\B\ket{\psi_\mu},
+ &K_{\nu\mu}&=K_{\mu\nu}.
+ \label{eq:energy-sector-free-coherence}
+\end{align}
+Here $F_\nu$ contains both bare field and bare TLS energy in that sector.
+The selection rules above now give, with absent sectors contributing zero,
+\begin{align}
+ E_\nu&=F_\nu+K_{\nu,\nu-1}+K_{\nu,\nu+1},\\
+ E&=\sum_\nu F_\nu+2\sum_{\nu=0}^{\nu_{\max}-1}K_{\nu,\nu+1}.
+ \label{eq:energy-sector-expanded}
+\end{align}
+Each cross-sector coherence $K_{\nu,\nu+1}$ thus contributes equally to
+$E_\nu$ and $E_{\nu+1}$. The total expectation includes twice that value,
+just as the two conjugate records in \eqref{eq:energy-reverse-pair}.
+Equivalently, in the recorded-entry notation,
+\begin{equation}
+ E_\nu=\sum_{q:\nu(q)=\nu}\epsilon_q|v_q|^2
+ +\sum_\ell\mathbf1_{\nu(r_\ell)=\nu}
+        \Re[v_{r_\ell}^*Dz_\ell v_{c_\ell}].
+ \label{eq:energy-sector-records}
+\end{equation}
+The sector is determined by the \emph{target row} $r_\ell$, whereas the
+mode partition uses tag $m_\ell$. They group the same contributions by
+different labels.
+
+The result is not a conditional energy after a photon-number measurement.
+For $p_\nu>0$, the normalized projected state would be
+$\ket{\widehat\psi_\nu}=\ket{\psi_\nu}/\sqrt{p_\nu}$, with
+\begin{equation}
+ E_{\mathrm{cond},\nu}\equiv
+ \bra{\widehat\psi_\nu}H_\B\ket{\widehat\psi_\nu}
+ =\frac{\bra{\psi_\nu}H_\B\ket{\psi_\nu}}{p_\nu}
+ =\frac{F_\nu}{p_\nu}.
+ \label{eq:energy-conditional}
+\end{equation}
+The final equality uses $Q_\nu V_\B Q_\nu=0$. Therefore
+\begin{equation}
+ \sum_{\nu:p_\nu>0}p_\nu E_{\mathrm{cond},\nu}
+ =\sum_\nu F_\nu=\langle H_{0,\B}\rangle,
+ \qquad\text{generally not }E.
+\end{equation}
+Removing coherences by this hypothetical projection removes their interaction
+energy. The implemented $E_\nu$ keeps them via the symmetric allocation.
+It is neither $p_\nu$, nor $\nu p_\nu$, nor $p_\nu E_{\mathrm{cond},\nu}$.
+
+\textbf{An explicit two-amplitude example, including the signs.}
+Choose one retained nonzero mode $m$ and $x_{\mathrm{tls}}=0$. Evaluate the
+normalized ket with just two nonzero components
+\begin{equation}
+ \ket{\psi_\varphi}
+ =\frac{\ket{1_m;g}+e^{\ii\varphi}\ket{0;e}}{\sqrt2},\qquad
+ G_m\equiv\frac{Df_m}{\sqrt L}\in\mathbb R.
+ \label{eq:energy-example-ket}
+\end{equation}
+Other modes may be present but have zero amplitudes in this example.
+The matrix restricted to these two components, ordered as
+$(\ket{1_m;g},\ket{0;e})$, is
+\begin{equation}
+ H\big|_{\mathrm{two\ components}}=
+ \begin{pmatrix}\omega_m&-\ii G_m\\\ii G_m&\omega_0\end{pmatrix}.
+ \label{eq:energy-example-matrix}
+\end{equation}
+This is a submatrix used to evaluate the expectation, not a claim that this
+pair is a dynamically closed subspace in an arbitrary multimode run.
+The directed annihilation record connects $\ket c=\ket{1_m;g}$ to
+$\ket r=\ket{0;e}$, with $z=u_m=\ii f_m/\sqrt L$ and amplitudes
+$v_r=e^{\ii\varphi}/\sqrt2$, $v_c=1/\sqrt2$. Thus
+\begin{align}
+ \Re(v_r^*Dzv_c)&=\Re\!\left(\frac{\ii G_me^{-\ii\varphi}}2\right)
+                  =\frac{G_m\sin\varphi}2,\\
+ W_m&=G_m\sin\varphi,\qquad
+ E=\frac{\omega_m+\omega_0}2+G_m\sin\varphi.
+ \label{eq:energy-example-total}
+\end{align}
+The reverse creation record supplies the other half of $W_m$. Every photon
+and TLS population is independent of $\varphi$, but the energy is not.
+The two partitions return
+\begin{align}
+ E_m&=\frac{\omega_m}2+G_m\sin\varphi,
+ &E_a&=\frac{\omega_0}2,\\
+ E_{\nu=1}&=\frac{\omega_m}2+\frac{G_m\sin\varphi}2,
+ &E_{\nu=0}&=\frac{\omega_0}2+\frac{G_m\sin\varphi}2.
+ \label{eq:energy-example-partitions}
+\end{align}
+Other mode/sector contributions vanish. Both sums give
+\eqref{eq:energy-example-total}, although the interaction is allocated
+differently. For $\omega_m=1$, $\omega_0=3$, $G_m=1.2$ and
+$\varphi=-\pi/2$,
+\begin{equation}
+ W_m=-1.2,\quad E_m=-0.7,\quad E_a=1.5,\quad
+ E_{\nu=1}=-0.1,\quad E_{\nu=0}=0.9,\quad E=0.8.
+ \label{eq:energy-example-negative}
+\end{equation}
+A negative component is compatible with a positive total. It represents
+an interaction contribution, not a negative probability. Setting $\varphi=0$
+keeps the same populations but gives $W_m=0$ and $E=2$.
+
+\textbf{What to calculate for total-energy monitoring, and the code mapping.}
+All algebraic sum rules also hold for an unnormalized numerical vector.
+If $\eta(t)=v(t)^\dagger v(t)$, distinguish
+\begin{equation}
+ E_{\mathrm{raw}}(t)=\Re[v^\dagger H_{\B}v],\qquad
+ E_{\mathrm{normalized}}(t)=\frac{E_{\mathrm{raw}}(t)}{\eta(t)}
+ \quad(\eta>0).
+ \label{eq:energy-raw-normalized}
+\end{equation}
+They coincide for exact normalized evolution. \code{compute_energy} and
+both partitions return raw quadratic expressions. To obtain normalized
+partitions one would divide \emph{all} components by the same $\eta$.
+Dividing only the total would invalidate a comparison of the sum rule.
+For an already propagated experiment, monitoring the requested quantity needs
+only:
+\begin{lstlisting}
+observables = experiment.compute_observables()
+time = observables['time']
+norm_squared = observables['norm']
+E_raw = experiment.compute_energy()
+E_normalized = E_raw / norm_squared
+
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot(time, E_raw, label='raw Hamiltonian expectation')
+ax.axhline(E_raw[0], color='black', linestyle=':', label='initial energy')
+ax.set(xlabel='t', ylabel='energy')
+ax.legend()
+\end{lstlisting}
+There is no need to compute a mode profile or photon-number profile for this
+plot. Useful absolute diagnostics are
+\begin{equation}
+ \delta_E=\max_j|E_{\mathrm{raw}}(t_j)-E_{\mathrm{raw}}(0)|,\qquad
+ \delta_\eta=\max_j|\eta(t_j)-1|.
+ \label{eq:energy-numerical-diagnostics}
+\end{equation}
+An absolute energy error remains defined when $E(0)=0$, unlike an error
+normalized by $|E(0)|$. Raw norm, raw energy and tighter solver tolerances
+should be considered together; a conserved expectation is not a proof of
+small full-state error.
+
+The exact connections to the executed operations are:
+\begin{longtable}{p{.33\textwidth}p{.58\textwidth}}
+\toprule Operation & Quantity defined above\\\midrule\endhead
+\code{compute_energy} & Sparse multiplication followed by
+$\Re\sum_qv_q^*(Hv)_q$, equation~\eqref{eq:energy-total-definition}.\\
+Mode-profile \code{probability} & Array $|C_{i,s}|^2$ with shape $(B,2)$.\\
+Mode-profile \code{field} & $F_m=\omega_m\sum_{i,s}n_{i,m}|C_{i,s}|^2$,
+formed from the occupation matrix and probabilities.\\
+\code{contributions[l]} & Directed term
+$\Re[v_{r_\ell}^*Dz_\ell v_{c_\ell}]$,
+equation~\eqref{eq:energytriplets}.\\
+Mode-profile \code{interaction} & Weighted count by tag $m_\ell$, giving
+$W_m$; the return is $F_m+W_m$ and separate $E_a$.\\
+Photon-profile \code{energy[q]} & Row contribution
+$\Re[v_q^*(Hv)_q]$. Group pairs of TLS rows and then photon totals to
+produce $E_\nu$, equation~\eqref{eq:energy-sector-row-definition}.\\
+\bottomrule
+\end{longtable}
+This maps the displayed total and both heatmaps to their defining operators.
+The method name \code{energy_excitations_vec} uses the photon-number axis
+$\nu$, not a new atomic oscillator or the conserved RWA total excitation.
+
+
+\paragraph{Implicit embedding in a common full space.}
+Comparisons require a common physical box and consistent conventions.
+Let $\K_*=\K_A\cup\K_B$ and $N_*\geq\max(N_A,N_B)$; the ambient space is
+\begin{equation}
+ \mathcal H_* = \operatorname{span}
+ \{\ket{\bm n;s}:0\leq n_m\leq N_*,\ k_m\in\K_*,\ s=g,e\}.
+ \label{eq:ambient}
+\end{equation}
+A physical mode map $\mu_X$ defines
+\begin{equation}
+ (\iota_X\bm n)_{\mu_X(m)}=n_m,\qquad
+ (\iota_X\bm n)_\ell=0\text{ for absent modes},\qquad
+ \iota_X\ket{\bm n;s}=\ket{\iota_X\bm n;s}.
+\end{equation}
+Distinct tuples stay orthogonal, so
+\begin{equation}
+ \iota_X^\dagger\iota_X=I_X,\qquad
+ \|\iota_X\psi_X\|=\|\psi_X\|.
+ \label{eq:isometry}
+\end{equation}
+For example, adding $k=0$ maps $\ket{n_{-1},n_{+1};s}$ to
+$\ket{n_{-1},0,n_{+1};s}$. Positive occupation on that added mode is
+orthogonal to every such embedded ket. Reordering existing modes only permutes
+coordinates and cannot change an overlap.
+
+For individually normalized kets,
+\begin{align}
+ A_{AB}&=\braket{\iota_A\psi_A}{\iota_B\psi_B}
+       =\sum_{\bm n\in\iota_A\B_A\cap\iota_B\B_B}
+                       \sum_s C_{A,\bm n,s}^*C_{B,\bm n,s},\\
+ F_{\mathrm{state}}&=|A_{AB}|^2.
+ \label{eq:fstate}
+\end{align}
+The intersection enters because missing amplitudes are zero. No projection
+and renormalization on the intersection is performed. For orthogonal
+configurations $x,y$, take $\ket{\psi_A}=\ket x$ and
+$\ket{\psi_B}=\sqrt p\ket x+\sqrt{1-p}\ket y$. Then
+\begin{equation}
+ F_{\mathrm{state}}=p;
+ \qquad\text{renormalizing the common component would incorrectly give }1.
+ \label{eq:intersectionexample}
+\end{equation}
+For distinct one-photon modes $a,b$, the states
+$(\ket{0;g}+\ket{1_a;g})/\sqrt2$ and
+$(\ket{0;g}+\ket{1_b;g})/\sqrt2$ share only vacuum. Their overlap is $1/2$
+and their state fidelity is $1/4$.
+
+Keys contain sorted pairs $(\text{physical mode index},n_m)$ for $n_m>0$;
+vacuum has the empty key. Each stores two TLS amplitudes. All shared
+configurations contribute, including several occupied modes. No vector of
+dimension $2(N_*+1)^{|\K_*|}$ is created. The union retains the first grid's
+order and appends absent modes; sorting keys makes that internal order irrelevant.
+Momentum matching uses absolute tolerance $10^{-12}$, zero relative tolerance,
+and rejects ambiguous identifications.
+
+The time-series interface checks equal $L$ to absolute tolerance $10^{-12}$
+and exactly equal output arrays before pairing states. Low-level
+\code{compare_states} has no $L$ or Hamiltonian input, so its caller must
+ensure physical comparability. Matching numerical momenta from different
+boxes alone does not certify identical normalized modes.
+
+\paragraph{Atomic fidelity, normalization and bounds.}
+The atomic metric is squared Uhlmann fidelity,
+\begin{equation}
+ F_{\mathrm{atom}}=
+ \left[\Tr\sqrt{\sqrt{\widehat\rho_{a,A}}\,
+                    \widehat\rho_{a,B}\sqrt{\widehat\rho_{a,A}}}\right]^2.
+ \label{eq:fatom}
+\end{equation}
+The code squares the value returned by \code{qutip.fidelity}. For qubits,
+\begin{equation}
+ F_{\mathrm{atom}}=\Tr(\widehat\rho_{a,A}\widehat\rho_{a,B})
+                  +2\sqrt{\det\widehat\rho_{a,A}\det\widehat\rho_{a,B}}.
+ \label{eq:qubit}
+\end{equation}
+To derive this, let $X=\sqrt\rho\,\sigma\sqrt\rho$ have eigenvalues $x_1,x_2$.
+Then $(\Tr\sqrt X)^2=x_1+x_2+2\sqrt{x_1x_2}$,
+$\Tr X=\Tr(\rho\sigma)$ and $\det X=\det\rho\det\sigma$.
+Rank-deficient cases follow by continuity. For Bloch vectors $\bm r,\bm s$,
+\begin{equation}
+ F_{\mathrm{atom}}=\frac{1+\bm r\cdot\bm s
+              +\sqrt{(1-|\bm r|^2)(1-|\bm s|^2)}}2.
+\end{equation}
+It reduces to squared overlap for pure atomic states, and against a pure
+$\ket e$ to the normalized excited population. Adding vacuum modes leaves
+the atomic reduction invariant; no ambient allocation is required.
+
+Both metrics normalize each entire finite nonzero ket, not a common subset.
+Values are clipped to $[0,1]$ for roundoff overshoots. Raw norm diagnostics
+remain visible. Monotonicity under the common partial trace yields
+\begin{equation}
+ 0\leq F_{\mathrm{state}}\leq F_{\mathrm{atom}}\leq1.
+ \label{eq:monotonicity}
+\end{equation}
+For instance, $\ket{1_+;g}$ and $\ket{1_-;g}$ have state fidelity zero
+and atomic fidelity one. No ratio is calculated: a quotient of these metrics
+is not generally a fidelity of the field reductions.
+
+For normalized embedded pure states, $\rho_A-\rho_B$ has nonzero eigenvalues
+$\pm\sqrt{1-|\braket{\psi_A}{\psi_B}|^2}$ in their two-dimensional span.
+Therefore, for any common projector, or more generally $0\leq Q\leq I$,
+\begin{equation}
+ |\Tr[Q(\rho_A-\rho_B)]|
+ \leq\tfrac12\|\rho_A-\rho_B\|_1=\sqrt{1-F_{\mathrm{state}}}.
+ \label{eq:bound}
+\end{equation}
+This bounds disagreement between normalized populations of two finite
+calculations, not accuracy against a continuum experiment. For TLS-only
+measurements an analogous upper bound uses $\sqrt{1-F_{\mathrm{atom}}}$.
+
+\paragraph{Sample means and scattering interpretation.}
+The coupling sweep and mode selection report
+\begin{equation}
+ \overline F_{\mathrm{samples}}=\frac1{N_t}\sum_{j=0}^{N_t-1}F(t_j).
+ \label{eq:mean}
+\end{equation}
+This differs from final fidelity and a time integral. A trapezoidal time
+average would instead be
+\begin{equation}
+ \overline F_{\mathrm{time}}\simeq\frac1T\sum_{j=0}^{N_t-2}
+       \frac{F(t_j)+F(t_{j+1})}{2}(t_{j+1}-t_j).
+ \label{eq:quadrature}
+\end{equation}
+Only equation~\eqref{eq:mean} is implemented. Endpoints have different weights
+even on a uniform grid; a shorter final interval still has an equally weighted
+output in the sample mean. Initial metrics are stored separately. Cap convergence
+compares final kets for adjacent entries in the supplied increasing cap list,
+which need not differ by one.
+
+Scattering supplies finite-packet sector populations and Fourier profiles.
+If $\sum_{k_m<0}|c_m|^2>0$, final negative-momentum population is not by itself
+a reflection probability for an exclusively positive-momentum input.
+Subtracting the initial population need not remove interference.
+For RWA evolution from one photon and ground TLS, excitation conservation gives
+\begin{equation}
+ P_{+,1g}+P_{-,1g}+P_{0,1g}+P_e=1
+ \label{eq:rwasectors}
+\end{equation}
+for a normalized state. Without RWA additional sectors can carry norm, so
+this four-term identity is not general.
+
+Extracting $t(k)$ or $r(k)$ needs identifiable outgoing packets, control of
+periodic returns and a phase convention relative to free propagation.
+Counter-rotating terms can require dressed asymptotic states and additional
+photon channels. The calculated quantities remain finite-time projections;
+neither fidelity is an $S$-matrix element.
+
+\section{Notebook control, resources and source-line commentary}
+\subsection{Shared configuration and callable Python experiments}
+\paragraph{Configuration and execution.}
+\code{ExperimentConfig} collects three physical dictionaries, cutoffs, cap,
+basis name, RWA, storage choice, grid control and selection windows. Validation
+occurs when resolving the grid, building the basis/Hamiltonian and preparing
+the ket. \code{with_D} returns a copy with a new atomic dictionary.
+An \code{Experiment} copies its physical dictionaries before construction,
+so sweeps do not overwrite the supplied physical configuration.
+A notebook parameter cell can use:
+\begin{lstlisting}
+import numpy as np
+from dataclasses import replace
+from src.xp_config import ExperimentConfig
+from src.experiment import estimate_config
+from src.fidelities import fidelities_over_time
+from experiment.atom_evolution import (
+    run_atom_evolution, plot_atom_evolution,
+)
+
+config = ExperimentConfig(
+    param_photon={'k_0': 1., 'sigma_k': .4, 'x_0': -2.,
+                  'state': 'number', 'n': 1},
+    param_atom={'omega_0': 1., 'D': .2, 'L': 2*np.pi,
+                'x_tls': 0., 'coupling': 'sqrt',
+                'initial_state': 'g'},
+    param_time_evol={'T': 4., 'dt': .05,
+                     'rtol': 1e-9, 'atol': 1e-11},
+    n_max=2, CTRL_M_EXPLICIT=True, M=5,
+    truncation='full+totalcap', store_state=True)
+
+# Estimate every basis that will actually be propagated.
+for scheme in ('full+totalcap', 'truncated'):
+    estimate_config(replace(config, truncation=scheme))
+runs = run_atom_evolution(config)
+metrics = fidelities_over_time(
+    runs['truncated'], runs['full+totalcap'])
+fig = plot_atom_evolution(runs)
+\end{lstlisting}
+For cutoff control, use \code{CTRL_M_EXPLICIT=False} and
+\code{cutoffs={'ir_cutoff': 0., 'uv_cutoff': 2.}} instead.
+At this $L$ the base grid is identical. Direct execution constructs
+\code{Experiment}, calls \code{propagate_state}, then \code{compute_observables};
+the common experiment helper performs those three operations.
+
+\paragraph{Six experiments and their output contracts.}
+All five migrated Uri notebooks explicitly set \code{coupling='sqrt'}.
+The scattering notebook remains alongside them. Modules do not simulate
+or change the Matplotlib backend on import. Numerical execution and plotting
+are separate functions, with plotting returning figure objects.
+\begin{longtable}{p{.34\textwidth}p{.57\textwidth}}
+\toprule Module & Calculation and main return value\\\midrule\endhead
+\code{atom_evolution.py} & Dictionary of propagated \code{Experiment}
+objects by requested basis. Forces history storage; plots $P_e$ and entropy.
+The notebook additionally calculates the two fidelities.\\
+\code{energy_profile.py} & One experiment with an added
+\code{energy_profiles} dictionary containing both partitions and total
+energy. Requires history; plots and animation reuse the arrays.\\
+\code{full_cumulative_fidelity.py} & Dictionary of increasing caps,
+retained final-only runs, and initial/final metrics for adjacent cap-list
+entries. Always uses total-cap.\\
+\code{sweep_D_fidelity.py} & Dictionary of physical couplings, candidate
+names, comparator name, sample means and initial metrics. Forces history.\\
+\code{compare_mode_selection.py} & Coupling sweeps with/without selection,
+and window heatmaps at fixed coupling. Requires history. Comparator is
+always unselected total-cap.\\
+\code{scattering.py} & One experiment with the user's dictionary API;
+optional observable CSV. Plots $1g$ profiles and directional/zero/TLS/norm
+populations.\\
+\bottomrule
+\end{longtable}
+With $S$ candidate schemes, $Q$ coupling values, $C$ caps, and $P,A$ window
+factor counts, the layouts are:
+\begin{longtable}{p{.28\textwidth}p{.63\textwidth}}
+\toprule Result & Array shapes and axes\\\midrule\endhead
+Atom evolution & Ground/excited coefficient arrays $(N_t,B)$; population,
+entropy and time-series fidelity arrays $(N_t,)$.\\
+Energy & \code{E_modes}: $(N_t,M)$; \code{E_atom}, \code{E_total}:
+$(N_t,)$; \code{E_excitation}: $(N_t,\nu_{\max}+1)$.
+Its axis counts photons, not photons plus TLS excitation.\\
+Cap convergence & Each metric and its \code{_initial} counterpart:
+$(C-1,)$. Entry $j$ compares supplied caps $j$ and $j+1$.\\
+Coupling sweep & Each metric and its \code{_initial} counterpart:
+$(S,Q)$, scheme before coupling. Unsuffixed metrics are sample means.\\
+Selection & Sweep metrics $(S,2,Q)$, with middle axis
+$[\mathrm{False},\mathrm{True}]$. Each \code{_heatmap}: $(S,P,A)$,
+photon window before atomic window.\\
+Scattering & Observable arrays of length $N_t$ with history, one otherwise;
+wavefunction array indexed by the supplied spatial samples.\\
+\bottomrule
+\end{longtable}
+For final-only runs the coefficient arrays have shape $(B,)$, not $(1,B)$;
+observable methods promote them internally as needed. Diagnostics with
+\code{t=None} return a length-one array/list then, whereas an explicit final
+time returns one scalar, matrix or profile. The mode-profile tuple remains
+$(k,E_m,0.0,E_a)$; zero is a compatibility placeholder, not another mode.
+
+Cap convergence compares equal physical/grid inputs with different caps.
+Its default CLI preparation is coherent, so initial projection differences
+are expected. The coupling sweep defaults to a propagated total-cap
+comparator; \code{reference} can select another finite basis. This is distinct
+from the ambient full space in equation~\eqref{eq:ambient}. A candidate with
+the comparator's scheme reuses its trajectory.
+
+The selection study rebuilds an unselected comparator at each $D$. Heatmaps
+use \code{D_heatmap} when given, otherwise the input configuration's coupling.
+Their returns contain only the sample means, not separate initial heatmap
+metrics; the sweep arrays do contain the \code{_initial} values. This distinction
+matters when separating selected-preparation and dynamical effects.
+
+\paragraph{Historical scripts, exports and notebook state.}
+The five \code{experiments_Uri/} paths remain executable delegates. The
+historical coupling-sweep filename keeps its \code{g} spelling for path
+compatibility; arguments and implementation use $D$. Old \code{key=value}
+syntax is replaced by \code{--option value}. Compatible script paths do not
+imply that historical numerical values require no conversion.
+From the repository root:
+\begin{lstlisting}[language={}]
+python -m experiment.scattering --D 0.2 --ctrl-m-explicit --M 5
+python -m experiment.sweep_D_fidelity --D-values 0.02,0.1,0.2 \
+    --out results/sweep.png
+python experiments_Uri/energy_profile.py --D 0.2 \
+    --out results/energy.png --gif results/energy.gif
+\end{lstlisting}
+The CLI defaults to cutoff control; \code{--M} is active only with
+\code{--ctrl-m-explicit}. Both profiles are available, with default sqrt;
+\code{--RWA} enables RWA. Solver options can be set in the Python time
+dictionary. Notebooks resolve the root whether the kernel starts there or in
+\code{notebooks/}, and keep saved outputs cleared.
+
+With \code{--out}, a CLI saves a figure and same-stem NPZ with the supplied
+arrays. Its metadata field is \code{configuration_json}.
+JSON stores the base configuration;
+additional sweep choices and derived grids must be read from accompanying
+arrays or reconstructed. Complex values are represented as strings.
+Ordinary exported arrays require no pickle:
+\begin{lstlisting}
+import json
+with np.load('results/sweep.npz', allow_pickle=False) as data:
+    metadata = json.loads(str(data['configuration_json']))
+    D_values = data['D']
+    F_state_mean = data['F_state']
+\end{lstlisting}
+The atom-evolution CLI exports time and excited populations; entropy and
+notebook fidelity curves are not automatically included in that export.
+Cap exports omit Python run objects. Optional scattering CSV writes
+\code{results/scattering.csv}, overwriting a prior requested export, with
+one column per observable and no configuration metadata.
+
+\subsection{Correspondence between controls and resource costs}
+\paragraph{What the grid report establishes.}
+The same \code{resolve_grid} serves propagation and estimation before Fock
+allocation. Base and selected descriptions contain counts, signed extrema,
+radial extrema, zero presence, smallest nonzero momentum and integer indices.
+For integer index set $I$, the report tests
+\begin{equation}
+ I=\{j:-j_{\max}\leq j\leq j_{\max},\ |j|\geq j_{\min}\},\quad
+ j_{\min}=\min_{j\in I}|j|,\quad j_{\max}=\max_{j\in I}|j|.
+ \label{eq:radialexact}
+\end{equation}
+This is \code{radial_cutoffs_exact}. If also $j_{\min}=0$, the count is
+\code{equivalent_M}; otherwise that field is \code{None}. Extrema alone
+cannot represent asymmetry or holes. At $L=2\pi$:
+\begin{center}
+\begin{tabular}{l l c c}
+\toprule Inputs & Grid & Radial exact & Equivalent $M$\\\midrule
+$M=5$ & $\{-2,-1,0,1,2\}$ & Yes & 5\\
+IR/UV $=(0,2)$ & $\{-2,-1,0,1,2\}$ & Yes & 5\\
+IR/UV $=(0.2,2.8)$ & $\{-2,-1,1,2\}$ & Yes & None\\
+IR/UV $=(0,0)$ & $\{0\}$ & Yes & 1\\
+Selected $\{-2,0,2\}$ & $\{-2,0,2\}$ & No & None\\
+Selected $\{0,1,2\}$ & $\{0,1,2\}$ & No & None\\\bottomrule
+\end{tabular}
+\end{center}
+The first two grids give identical finite dynamics at equal other inputs.
+A positive-IR band has no allowed equivalent explicit count. The report
+states this rather than proposing a count that silently inserts zero.
+
+\paragraph{Vector storage and exact dimension growth.}
+A complex128 ket occupies $16d$ bytes. With $S=\code{store_state}$,
+\begin{align}
+ G_{\mathrm{ket}}&=\frac{16d}{2^{30}},&
+ G_{\mathrm{history}}&=G_{\mathrm{ket}}
+        \begin{cases}N_t,&S,\\1,&\neg S,\end{cases}\\
+ G_{\mathrm{vectors}}&\simeq2G_{\mathrm{history}},&
+ \operatorname{nnz}(H)&\leq d(1+2M).
+ \label{eq:memory}
+\end{align}
+GiB means $2^{30}$ bytes. The factor two estimates solver kets and the
+contiguous coefficient array. Alternating ground/excited views share that
+array and do not add two more full copies. The initial ket, QuTiP objects,
+transient conversions and solver workspace can increase storage further.
+
+For $M=5,N=2$, joint dimensions are $22,42,486$ for truncated, total-cap and
+full. At $T=4,\code{dt}=0.05$, $N_t=81$ and estimated retained vector bytes
+are $57\,024$, $108\,864$, and $1\,259\,712$. At fixed $N$ and large $M$,
+\begin{equation}
+ d_{\mathrm{total}}\sim2M^N/N!,\qquad
+ d_{\mathrm{truncated}}\sim2NM,\qquad d_{\mathrm{full}}=2(N+1)^M.
+\end{equation}
+Polynomial growth at fixed cap does not make high caps cheap; the exact
+binomial dimension should be evaluated before allocation.
+
+\paragraph{Sparse transitions and excluded costs.}
+Let $A_\B$ count photon edges $\bm n\leftrightarrow\bm n+\bm e_m$ in a
+basis, without TLS labels. For $N\geq1$,
+\begin{align}
+ A_{\mathrm{truncated}}&=MN,\\
+ A_{\mathrm{total}}&=M\binom{M+N-1}{N-1},\\
+ A_{\mathrm{full}}&=MN(N+1)^{M-1}.
+ \label{eq:edges}
+\end{align}
+For total-cap, remove one photon in the changed mode and count configurations
+with total at most $N-1$. For full, choose the mode, one of its $N$ adjacent
+levels, and the other $M-1$ occupations. At $N=0$ all counts are zero.
+The engine records $4A_\B$ directed TLS-flipping triplets without RWA,
+$2A_\B$ with it. Zero coefficients, such as the sqrt zero mode, may still
+occupy recorded triplet slots. Physically nonzero matrix entries can be
+fewer, especially at $D=0$. The estimator uses the simpler bound above.
+
+A complex CSR matrix with $Z$ stored entries uses approximately
+\begin{equation}
+ 16Z+b_{\mathrm{idx}}Z+b_{\mathrm{idx}}(d+1)\quad\text{bytes}
+ \label{eq:csrbytes}
+\end{equation}
+for its numerical arrays, where $b_{\mathrm{idx}}$ depends on the sparse
+index type. The engine additionally retains $H_0$, $V$, its QuTiP Hamiltonian,
+and transition rows/columns/values/mode IDs. Python lists and COO/CSR
+conversion add temporary peaks. Basis tuples, dictionary entries and
+photon-number arrays have at least $MB$ occupation entries plus object
+overhead. These costs are excluded from the returned vector estimate.
+
+\code{feasible} is only the heuristic $d\leq100000$ and
+$G_{\mathrm{vectors}}\leq1$ GiB. It is not a memory guarantee, a physical
+accuracy criterion or an automatic engine limit. Notebooks check it before
+allocation. Estimates concern one trajectory: retained objects at several
+caps/schemes add their costs. Cap convergence keeps all its runs, even though
+they are final-only. Sweep peaks include a comparator and candidate together.
+The largest individual estimate is therefore not a total collection estimate.
+
+Implicit fidelity keys examine $O(M_AB_A+M_BB_B)$ occupation entries.
+Sorting each key adds work dependent on its occupied-mode count; matching
+physical modes searches the current union for each second-grid mode.
+Keys and dictionaries add memory, but no ambient full vector is allocated.
+Choosing full for an actual propagation still incurs its exponential dimension.
+
+\subsection{Numbered code and comments on individual operations}
+Listings below are loaded directly from executed sources. Commentary tables
+identify current line ranges and relate their operations to the equations.
+The generator finds ordered engine markers and syntax-tree function ranges
+for experiments; line numbers are not copied from old versions. Comments
+cover validations, tensor ordering, phases, missing transitions, normalization,
+output shapes and statistical choices. Core-engine ranges are deliberately
+narrower than experiment function ranges.
+To reproduce the documentation from the repository root:
+\begin{lstlisting}[language={}]
+python documentation/build_code_notes.py
+latexmk -pdf -cd documentation/main.tex
+\end{lstlisting}
+These commands generate documentation only.
+\input{code_notes.tex}
+
+\section{Comparison with the student implementation and validation}
+\subsection{Exact convention conversions and finite-model changes}
+\paragraph{Coupling, field phase and state conversion.}
+An exact comparison first needs identical physical modes, bases and dispersion.
+Call the historical parameter named \code{g} $\gamma_U$; its annihilation
+coefficient was $\gamma_U\sqrt{|k_m|}e^{-\ii k_mx_a}$.
+For sqrt and equal position parameters, matching magnitudes requires
+\begin{equation}
+ D=\sqrt L\,\gamma_U.
+ \label{eq:Dconversion}
+\end{equation}
+The box factor means equal numerical old/new couplings need not agree.
+The factor $\ii$ is a field phase convention implemented by
+\begin{equation}
+ U=e^{-\ii\pi\mathcal N_f/2},\quad Ua_mU^\dagger=\ii a_m,\quad
+ Ua_m^\dagger U^\dagger=-\ii a_m^\dagger,\quad H_D=UH_UU^\dagger.
+ \label{eq:gauge}
+\end{equation}
+Since $U\ket{\bm n;s}=(-\ii)^\nu\ket{\bm n;s}$, applying a ladder before
+and after the diagonal phase proves the rules. All occupation projectors
+commute with $U$, so the equality survives truncation. Matched trajectories
+also require
+\begin{equation}
+ \ket{\psi_D(0)}=U\ket{\psi_U(0)},\qquad
+ \ket{\psi_D(t)}=U\ket{\psi_U(t)}.
+ \label{eq:trajectorygauge}
+\end{equation}
+Fixed-photon-number preparation changes only by a global phase. Coherent
+preparation instead requires
+\begin{equation}
+ \alpha_D=-\ii\alpha_U,
+ \label{eq:alphaconversion}
+\end{equation}
+including after projection. Keeping the same complex $\alpha$ while changing
+the Hamiltonian phase is not a matched-state conversion. Correctly related
+trajectories have equal TLS reductions and number populations; phase-sensitive
+field observables must be transformed too. Fidelities are invariant when the
+same $U$ acts on both compared states. Transforming only one member can
+produce a convention-dependent overlap.
+
+A displaced TLS additionally satisfies
+\begin{equation}
+ H(x)=U_xH(0)U_x^\dagger,\quad
+ U_x=\exp\!\left(\ii x\sum_m k_mn_m\right),\quad
+ U_xa_mU_x^\dagger=e^{-\ii k_mx}a_m.
+ \label{eq:translationgauge}
+\end{equation}
+This checks both transition phases simultaneously. It does not alter the
+Fourier-coordinate interpretation in equation~\eqref{eq:position}.
+
+\paragraph{Packet-width and selection conversion.}
+The historical amplitude was $\exp[-\sigma_U^2(k-k_0)^2/2]$.
+Equating exponents with equation~\eqref{eq:packet} gives
+\begin{equation}
+ \sigma_k=\frac1{\sqrt2\sigma_U},\qquad
+ x_0=x_{\mathrm{photon},U},\quad k_0=k_{\mathrm{photon},U}.
+ \label{eq:width}
+\end{equation}
+The old width multiplies momentum differences; the new width is a momentum
+standard-deviation parameter. Increasing old $\sigma_U$ narrows the momentum
+packet. Normalization on identical modes then gives the same coefficients.
+
+Historical selection radii were $w_U\sigma_U$, whereas new radii are
+$w_D\sigma_k$. Equal numerical radii additionally require
+\begin{equation}
+ w_D=\frac{w_U\sigma_U}{\sigma_k}=\sqrt2\,w_U\sigma_U^2.
+ \label{eq:windowconversion}
+\end{equation}
+This is a conversion in the historical numerical units. Envelope conversion
+alone does not match a selected calculation: the window radii and nearest-mode
+fallback must also be checked. Current factors mean multiples of the actual
+momentum width, rather than automatically reproducing old factor values.
+
+\paragraph{Implicit UV regulation and the changed grid.}
+The historical folded grid used $L$ and requested $M_U$. For even
+$M_U=2J$, its retained indices after zero deletion were
+\begin{equation}
+ \{-J+1,\ldots,-1,1,\ldots,J\},\quad |\K_U|=M_U-1,
+ \qquad k_{\max}=J\Delta k=\frac{\pi M_U}{L}.
+ \label{eq:oldgrid}
+\end{equation}
+The positive endpoint was unpaired. Full bandwidth is approximately
+$2\pi M_U/L$ and radial UV approximately $\pi M_U/L$: these are different
+uses of ``cutoff''. Current UV means largest retained $|k|$.
+At $M_U=16,L=20$, old indices were $-7,\ldots,-1,1,\ldots,8$.
+New explicit $M=15$ gives $-7,\ldots,0,\ldots,7$; $M=17$ gives
+$-8,\ldots,0,\ldots,8$. Neither reproduces the old set. The symmetric
+cutoff branch also cannot reproduce its unpaired endpoint.
+
+This is an intentional change of finite model, not a stylistic adjustment
+or a coupling redefinition. The new UV values at $L=20$ are $7\pi/10$ and
+$4\pi/5$ respectively. If one wants a fixed physical UV while increasing
+$L$ and refining momentum spacing, cutoff control states that intention
+explicitly and lets the count follow. Positive IR excludes zero only by an
+explicit band choice, not a hard-coded special case.
+
+\paragraph{Parameter migration and compatibility boundaries.}
+The numerical conversion rules can be located directly in the current inputs:
+\begin{longtable}{p{.25\textwidth}p{.27\textwidth}p{.39\textwidth}}
+\toprule Historical input & Current input & Meaning and required check\\\midrule\endhead
+\code{length} & Atomic \code{L} & Same physical length in natural units;
+the new momentum list must still be checked explicitly.\\
+\code{modes} & Config \code{M} or cutoffs & Odd actual count under explicit
+control; it is not the historical pre-deletion counter.\\
+\code{g} & Atomic \code{D} & $D=\sqrt L\,\gamma_U$ for sqrt and matched
+units; coherent phase also requires~\eqref{eq:alphaconversion}.\\
+\code{w_atom}, \code{x_atom} & Atomic \code{omega_0}, \code{x_tls} & Same
+frequency and Hamiltonian phase parameter. Do not inherit the old nonzero
+default position when intending a TLS at zero.\\
+\code{k_photon}, \code{x_photon} & Photon \code{k_0}, \code{x_0} & Same
+signed packet centre and phase parameter at matched modes.\\
+\code{sigma_photon} & Photon \code{sigma_k} & Reciprocal-width conversion
+\eqref{eq:width}, not a direct rename.\\
+\code{state} class & Photon \code{state} string & \code{number} or
+\code{coherent}; explicit \code{n} or \code{alpha} in the photon dictionary.\\
+\code{atom_state} & Atomic \code{initial_state} & Current preparation
+interface accepts $g,e,+,-$ labels. The former arbitrary two-component
+sequence is not an accepted label in this interface.\\
+\code{excitation_cap} & Config \code{n_max} & Cap meaning depends on the
+basis: per-mode in full, total in total-cap, ray occupation in truncated.\\
+\code{t}, \code{dt} & Time \code{T}, \code{dt} & Same duration and nominal
+sampling intention, but a changed output-time construction.\\
+\code{hbar}, \code{c} & Fixed natural units & The current API assumes both
+equal one; it does not expose arbitrary dimensional constants.\\
+\bottomrule
+\end{longtable}
+The old special single-mode branch placed a mode at the packet momentum.
+Current explicit $M=1$ instead means the zero mode, as specified by the
+symmetric-grid rule. Legacy classes such as \code{Config} and the separate
+Hamiltonian/state subclasses are replaced by the shared configuration and
+engine. The executable Uri paths are maintained; the historical internal
+class API and argument syntax are not preserved as aliases. The user's
+dictionary-based scattering interface is retained.
+
+Sampling changes also have a concrete consequence. At $T=4$ and
+\code{dt=0.05}, the old construction requested $80$ outputs with spacing
+$4/79$, whereas the current construction requests $81$ outputs with spacing
+$0.05$. A mean over those samples is a different discrete statistic even
+if both solvers approximate the same continuous trajectory. In the old
+construction, \code{dt} was used to choose a count rather than enforced as
+an output spacing.
+
+\paragraph{Comparative summary and corrected overlap.}
+\begin{longtable}{p{.22\textwidth}p{.31\textwidth}p{.38\textwidth}}
+\toprule Item & Student implementation & Patch and consequence\\\midrule\endhead
+Grid & Requested count reduced by zero deletion; unpaired endpoint
+possible. & Exact odd count with zero or an explicit radial band; reports
+resulting count and effective cutoffs.\\
+Coupling & Historical parameter, real coefficient at zero position. &
+$\ii Df_m/\sqrt L$ with signed phase. Exact conversion at fixed grid is
+\eqref{eq:Dconversion}--\eqref{eq:trajectorygauge}. Uri notebooks use sqrt.\\
+Packet & Multiplicative width in exponent. & Momentum width in denominator,
+conversion~\eqref{eq:width}; all selected momentum signs enter preparation.\\
+Assembly & Search among pairs of states. & Dictionary targets and bosonic
+transitions, $O(Md)$ assembly; shared entries fixed by~\eqref{eq:entries}.\\
+Indexing & Separate classes and scheme-specific indices. & Occupation tuples,
+alternating TLS entries and comparisons of physical configurations.\\
+Cross-basis overlap & Different basis types compared through one-occupied-mode
+configurations. & All shared occupations in implicit full, physical momentum
+alignment, and vacuum embedding of absent modes.\\
+Metrics & Global/atomic metrics plus a ratio used as a field proxy. & Only
+squared state/atomic fidelities; initial differences separately visible.\\
+Times & \code{linspace(0,T,int(T/dt))} and output renormalization. & Nominal
+\code{dt}, exact final time, raw norms and explicit tolerances. Sample means
+may change even with similar trajectories.\\
+Control & Heterogeneous scripts and inputs. & Callable modules, six notebooks,
+common CLI and historical path delegates. Former \code{codex/} migrated and removed.\\
+Energy & Mode/photon-number decompositions. & Preserved sum rules with
+interaction terms assigned using shared sparse transition data.\\
+\bottomrule
+\end{longtable}
+A minimal counterexample to the old cross-type overlap is
+$\ket{1,1;g}$ in full and total-cap with $N=2$. The physical overlap is one;
+a sum over one occupied mode gives zero. The corrected pair returns both
+fidelities equal to one. This fixes a comparison, not a propagated trajectory.
+
+At identical grids, number preparations are identical in every basis that
+contains them, and remain identical for $D=0$. Coherent projections can
+have equation~\eqref{eq:initialf} below one. Since occupation projectors
+commute with $H_0$, their mutual overlap remains at that initial value during
+free evolution on the shared grid. This diagnoses preparation differences
+without mistaking them for interaction-induced error.
+
+Reproducing old figures requires the exact mode list and cap/basis, coupling
+magnitude and phase, envelope and coherent phase, selection radii, output
+sampling and statistic. Parameter labels alone cannot establish reproduction
+when the finite grids or initial projections differ.
+
+\subsection{Mathematical verification and limits of the conclusions}
+\paragraph{Independent finite-dimensional oracles.}
+Tests construct small oscillator/TLS tensor operators independently of the
+transition loops, select rows/columns for each occupation basis and check
+\begin{equation}
+ H_{\mathrm{code}}=P_\B H_{\mathrm{tensor}}P_\B,
+ \qquad H_{\mathrm{code}}=H_{\mathrm{code}}^\dagger.
+ \label{eq:tensorcheck}
+\end{equation}
+Checks cover three bases, two profiles, RWA on/off and zero/nonzero positions.
+They also test parity, RWA excitation conservation and the simultaneous
+annihilation/creation phase identity~\eqref{eq:translationgauge}.
+
+An analytic check takes $L=2\pi$, modes $\{-1,0,1\}$, sqrt,
+$\omega_0=1$, RWA, $N\geq1$ and input $\ket{0;e}$. At zero TLS position,
+\begin{equation}
+ \ket B=(\ket{1_-;g}+\ket{1_+;g})/\sqrt2,\qquad
+ \ket{\mathrm{dark}}=(\ket{1_-;g}-\ket{1_+;g})/\sqrt2.
+\end{equation}
+The dark and zero-mode states decouple. In $(\ket{0;e},\ket B)$,
+\begin{equation}
+ H=I+\begin{pmatrix}0&\ii G\\-\ii G&0\end{pmatrix},\qquad
+ G=\frac{\sqrt2D}{\sqrt L},\qquad P_e(t)=\cos^2(Gt).
+ \label{eq:rabioracle}
+\end{equation}
+This checks the two-mode factor, box normalization and evolution in all bases.
+Independent $e^{-\ii Ht}\psi_0$ comparisons check BDF and final-only storage.
+
+Fidelities are tested against explicit small common-space embeddings with
+reordered grids, selected subsets, caps and shared multimode configurations.
+Atomic fidelity is checked against equation~\eqref{eq:qubit}. The $(1,1)$
+case protects the correction; orthogonal field directions with identical TLS
+protect the distinction between metrics. Population sums and energy partitions
+are checked against direct norms and expectations. Gaussian, vacuum,
+coherent and zero-mode preparations are tested separately from evolution.
+
+Integration tests exercise five historical script paths, exports and all
+six callable experiments. The six notebooks were validated and executed
+cell by cell at their defaults, leaving saved outputs empty. The completed
+migration passed 99 tests. These are migration validation results;
+a documentation rebuild does not replace rerunning tests after future code
+changes. In an installed development environment, use:
+\begin{lstlisting}[language={}]
+python -m pytest tests -q
+\end{lstlisting}
+Documentation compiles from its sources and regenerates line comments from
+current files. Derivations added here explain the current model; they do
+not introduce additional solver features.
+
+\paragraph{Integration error versus projection error.}
+Norm and energy conservation are necessary checks, but two different unitary
+evolutions can preserve both. Tighter tolerances or an independent exponential
+reference on small systems test integration error more directly.
+For an interpolated numerical trajectory with
+$r(t)=\ii\dot v_{\mathrm{num}}-H_{\B}v_{\mathrm{num}}$, variation of constants gives
+\begin{equation}
+ \|v_{\mathrm{num}}(t)-v(t)\|
+ \leq\|v_{\mathrm{num}}(0)-v(0)\|+\int_0^t\|r(s)\|\,ds.
+ \label{eq:numericalbound}
+\end{equation}
+The engine reports sampled diagnostics, not an evaluated residual integral;
+this equation specifies what a residual-based certificate would require.
+
+For projection, take a larger finite space with Hamiltonian $H$, smaller
+projector $P$, and $Q=I-P$. Let $\psi$ solve the larger evolution and $\psi_P$
+solve $PHP$. For $e=P\psi-\psi_P$,
+\begin{equation}
+ \ii\dot e=PHP\,e+PHQ\psi,\qquad
+ \|e(t)\|\leq\|e(0)\|+\int_0^t\|PHQ\psi(s)\|\,ds.
+ \label{eq:projectionbound}
+\end{equation}
+The driving term depends on omitted dynamics, not just final boundary
+population. Normalized coherent projections can give $e(0)\ne0$.
+Cap comparisons are useful, but a small final boundary population alone
+is not a rigorous dynamical error certificate. The modules do not evaluate
+this bound.
+
+\paragraph{Regulator convergence and finite-box scattering.}
+The checks establish finite-model consistency, not physical continuum convergence.
+A study still needs separate variations of
+\begin{equation}
+ N\to N',\quad k_{\mathrm{UV}}\to k'_{\mathrm{UV}},\quad
+ k_{\mathrm{IR}}\to k'_{\mathrm{IR}},\quad L\to L',\quad
+ (\mathrm{rtol},\mathrm{atol})\to(\mathrm{rtol}',\mathrm{atol}').
+ \label{eq:regulators}
+\end{equation}
+Truncated omits multimode configurations at every $N$; its large-cap limit
+is not full Fock space. Conversely, RWA number preparations can occupy a
+small invariant excitation sector in which larger caps make no difference.
+That agreement does not test arbitrary high-photon dynamics.
+
+Changing $L$ at fixed explicit count changes spacing, UV, resonant-mode
+availability and $D/\sqrt L$ together. Holding physical $D$ and cutoffs fixed
+while changing $L$ is a different discretization study. For a finite smooth
+band the associated Riemann sum is
+\begin{equation}
+ \frac1L\sum_{k_m\in\K}f_m^2\longrightarrow
+ \frac1{2\pi}\int_{k_{\mathrm{IR}}\leq|k|\leq k_{\mathrm{UV}}}f(k)^2\,dk.
+ \label{eq:continuumweight}
+\end{equation}
+This explains why per-mode $L^{-1/2}$ normalization and a growing mode count
+belong together. It does not prove convergence as UV increases without bound.
+
+Free phases $e^{-\ii|j|\Delta k t}$ recur after $t=L$. Interactions can change
+exact recurrence times, but a periodic packet can return to the interaction
+region after circulating around the box. Scattering observations should
+separate incoming/outgoing packets before such returns and be checked in
+larger boxes. Increasing $T$ without this check can turn single-passage
+scattering into repeated interaction. Initial negative/zero components and
+non-RWA multiphoton sectors must also be accounted for before assigning
+asymptotic coefficients.
+
+Historical plots become numerical references only after their actual grids,
+preparations, coupling conversions and statistics have been reconstructed.
+The equations, visible notebook inputs and configuration metadata make these
+comparisons reproducible without treating a changed finite model as a
+code-style refinement.
+\end{document}

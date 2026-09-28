@@ -1,272 +1,63 @@
-"""Tests for hamiltonians.py: HamiltonianFull, HamiltonianTruncated, HamiltonianAtom."""
 import numpy as np
 import pytest
-import scipy.sparse as sp
-import qutip
+from numpy.testing import assert_allclose
 
-from utilities import Config, NumberState
-from hamiltonians import (
-    HamiltonianFull, HamiltonianTruncated, HamiltonianAtom, HamiltonianTotalCap,
-    hamiltonian, Hamiltonian,
-)
+from src.states import FockBasis
+from src.hamiltonians import Hamiltonian
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def make_cfg(truncation='full', modes=1, excitation_cap=3, **kwargs):
-    return Config(modes=modes, excitation_cap=excitation_cap, truncation=truncation,
-                  state=NumberState(1), **kwargs)
+def tensor(items):
+    result=np.array([[1.]])
+    for item in items:
+        result=np.kron(result,item)
+    return result
 
 
-def built(cls, cfg):
-    h = cls(cfg)
-    h.build_hamiltonian()
-    return h
+def dense_oracle(k,N,atom,rwa):
+    M=len(k); d=N+1; field_dim=d**M
+    hfield=np.zeros((field_dim,field_dim),complex)
+    interaction=np.zeros((2*field_dim,2*field_dim),complex)
+    annihilation=np.diag(np.sqrt(np.arange(1,d)),1)
+    raising=np.array([[0,0],[1,0]],complex)
+    for m,km in enumerate(k):
+        factors=[np.eye(d) for _ in range(M)]; factors[m]=annihilation
+        a=tensor(factors)
+        hfield+=abs(km)*a.conj().T@a
+        f=np.sqrt(abs(km)) if atom['coupling']=='sqrt' else 1.
+        u=1j*f*np.exp(-1j*km*atom['x_tls'])/np.sqrt(atom['L'])
+        if rwa:
+            interaction+=np.kron(u*a,raising)+np.kron(u.conjugate()*a.conj().T,raising.conj().T)
+        else:
+            interaction+=np.kron(u*a+u.conjugate()*a.conj().T,raising+raising.conj().T)
+    return np.kron(hfield,np.eye(2))+np.kron(np.eye(field_dim),np.diag([0,atom['omega_0']]))+atom['D']*interaction
 
 
-# ---------------------------------------------------------------------------
-# Dimension
-# ---------------------------------------------------------------------------
-
-class TestComputeDim:
-    def test_full_single_mode(self):
-        cfg = make_cfg('full', modes=1, excitation_cap=3)
-        h = HamiltonianFull(cfg)
-        assert h.compute_dim() == 2 * (3 + 1) ** 1  # 8
-
-    def test_truncated_single_mode(self):
-        cfg = make_cfg('truncated', modes=1, excitation_cap=3)
-        h = HamiltonianTruncated(cfg)
-        assert h.compute_dim() == 2 * (1 * 3 + 1)  # 8
-
-    def test_atom_single_mode(self):
-        cfg = make_cfg('truncated+atom', modes=1, excitation_cap=3)
-        h = HamiltonianAtom(cfg)
-        assert h.compute_dim() == 2 * (1 * 3 + 1) * (3 + 1)  # 32
-
-    def test_totalcap_single_mode(self):
-        from math import comb
-        cfg = make_cfg('full+totalcap', modes=1, excitation_cap=3)
-        h = HamiltonianTotalCap(cfg)
-        assert h.compute_dim() == 2 * comb(3 + 1, 1)  # 8
-
-    def test_totalcap_multi_mode(self):
-        from math import comb
-        cfg = make_cfg('full+totalcap', modes=3, excitation_cap=2)
-        h = HamiltonianTotalCap(cfg)
-        N, M = cfg.excitation_cap, cfg.modes
-        assert h.compute_dim() == 2 * comb(N + M, M)
-
-    @pytest.mark.parametrize("truncation,cls", [
-        ('full', HamiltonianFull),
-        ('truncated', HamiltonianTruncated),
-        ('truncated+atom', HamiltonianAtom),
-        ('full+totalcap', HamiltonianTotalCap),
-    ])
-    def test_all_states_count_matches_dim(self, truncation, cls):
-        cfg = make_cfg(truncation)
-        h = cls(cfg)
-        assert sum(1 for _ in h.all_states()) == h.compute_dim()
-
-    @pytest.mark.parametrize("truncation,cls", [
-        ('truncated', HamiltonianTruncated),
-        ('truncated+atom', HamiltonianAtom),
-        ('full+totalcap', HamiltonianTotalCap),
-    ])
-    def test_mode_selection_resizes_hilbert_space(self, truncation, cls):
-        # mode_selection shrinks the mode count, and the Hamiltonian (built via the
-        # factory, so the full pipeline is exercised) must resize to match.
-        cfg = make_cfg(truncation, modes=64, length=20, excitation_cap=2,
-                       mode_selection=True)
-        h = cls(cfg)
-        H = hamiltonian(cfg)
-        assert cfg.modes < 64
-        assert h.compute_dim() == H.shape[0]
-
-    @pytest.mark.parametrize("truncation,cls", [
-        ('full', HamiltonianFull),
-        ('truncated', HamiltonianTruncated),
-        ('truncated+atom', HamiltonianAtom),
-        ('full+totalcap', HamiltonianTotalCap),
-    ])
-    def test_matrix_shape_matches_dim(self, truncation, cls):
-        cfg = make_cfg(truncation)
-        h = cls(cfg)
-        d = h.compute_dim()
-        assert h.H.shape == (d, d)
+@pytest.mark.parametrize('scheme',['full','full+totalcap','truncated'])
+@pytest.mark.parametrize('rwa',[False,True])
+@pytest.mark.parametrize('profile',['sqrt','flat'])
+@pytest.mark.parametrize('x',[0.,.37])
+def test_projected_hamiltonian_against_independent_tensor_operators(scheme,rwa,profile,x):
+    k=np.array([-1.,0.,1.]); N=2
+    basis=FockBasis(3,N,scheme)
+    atom={'L':6.,'omega_0':1.2,'D':.3,'x_tls':x,'coupling':profile}
+    full=dense_oracle(k,N,atom,rwa)
+    indices=[2*np.ravel_multi_index(n,(N+1,)*3)+s for n in basis.states for s in (0,1)]
+    expected=full[np.ix_(indices,indices)]
+    actual=Hamiltonian(basis,k,atom,rwa).build_hamiltonian().full()
+    assert_allclose(actual,expected,atol=1e-14)
+    assert_allclose(actual,actual.conj().T,atol=1e-14)
+    total=np.repeat(basis.photon_numbers,2)+np.tile([0,1],len(basis.states))
+    parity=(-1.)**total
+    assert_allclose(actual*parity[None,:],parity[:,None]*actual,atol=1e-14)
+    if rwa:
+        assert_allclose(actual*total[None,:],total[:,None]*actual,atol=1e-14)
 
 
-# ---------------------------------------------------------------------------
-# g() coupling
-# ---------------------------------------------------------------------------
-
-class TestCoupling:
-    def test_g_formula(self):
-        cfg = make_cfg('full', g=0.01)
-        h = HamiltonianFull(cfg)
-        k = 1.0
-        assert np.isclose(h.g(k), 0.01 * np.sqrt(1.0))
-
-    def test_g_zero_at_zero_k(self):
-        cfg = make_cfg('full')
-        h = HamiltonianFull(cfg)
-        assert h.g(0) == 0.0
-
-    def test_g_scales_with_sqrt_k(self):
-        cfg = make_cfg('full', g=1.0)
-        h = HamiltonianFull(cfg)
-        assert np.isclose(h.g(4.0), 2.0)
-
-
-# ---------------------------------------------------------------------------
-# transition_possible
-# ---------------------------------------------------------------------------
-
-class TestTransitionPossible:
-    def setup_method(self):
-        self.cfg = make_cfg('full', modes=1, excitation_cap=3)
-        self.h = HamiltonianFull(self.cfg)
-
-    def test_diagonal_is_false(self):
-        s = {'n1': 1, 'atom': 'g'}
-        assert self.h.transition_possible(s, s) is False
-
-    def test_same_atom_different_photon_is_false(self):
-        ket = {'n1': 1, 'atom': 'g'}
-        bra = {'n1': 0, 'atom': 'g'}
-        assert self.h.transition_possible(ket, bra) is False
-
-    def test_single_photon_emission_is_true(self):
-        # Atom de-excites, photon created: atom e->g, n+1
-        ket = {'n1': 1, 'atom': 'g'}
-        bra = {'n1': 0, 'atom': 'e'}
-        assert self.h.transition_possible(ket, bra) is True
-
-    def test_single_photon_absorption_is_true(self):
-        # Atom excites, photon absorbed: atom g->e, n-1
-        ket = {'n1': 0, 'atom': 'e'}
-        bra = {'n1': 1, 'atom': 'g'}
-        assert self.h.transition_possible(ket, bra) is True
-
-    def test_two_photon_change_is_false(self):
-        ket = {'n1': 2, 'atom': 'e'}
-        bra = {'n1': 0, 'atom': 'g'}
-        assert self.h.transition_possible(ket, bra) is False
-
-    def test_rwa_forbids_counter_rotating(self):
-        cfg = make_cfg('full', modes=1, excitation_cap=3, RWA=True)
-        h = HamiltonianFull(cfg)
-        # Counter-rotating: atom excites AND photon created (energy non-conserving)
-        ket = {'n1': 1, 'atom': 'e'}
-        bra = {'n1': 0, 'atom': 'g'}
-        assert h.transition_possible(ket, bra) is False
-
-    def test_rwa_allows_resonant(self):
-        cfg = make_cfg('full', modes=1, excitation_cap=3, RWA=True)
-        h = HamiltonianFull(cfg)
-        # Resonant: atom excites, photon absorbed (atom_change=+1, photon_diff=-1, sum=0)
-        ket = {'n1': 0, 'atom': 'e'}
-        bra = {'n1': 1, 'atom': 'g'}
-        assert h.transition_possible(ket, bra) is True
-
-
-# ---------------------------------------------------------------------------
-# transition_sign
-# ---------------------------------------------------------------------------
-
-class TestTransitionSign:
-    def setup_method(self):
-        self.cfg = make_cfg('full', modes=1, excitation_cap=3)
-        self.h = HamiltonianFull(self.cfg)
-
-    def test_emission_sign(self):
-        # Photon created (ket has more photons): diff = +1
-        ket = {'n1': 1, 'atom': 'g'}
-        bra = {'n1': 0, 'atom': 'e'}
-        assert self.h.transition_sign(ket, bra) == 1
-
-    def test_absorption_sign(self):
-        # Photon absorbed (ket has fewer photons): diff = -1
-        ket = {'n1': 0, 'atom': 'e'}
-        bra = {'n1': 1, 'atom': 'g'}
-        assert self.h.transition_sign(ket, bra) == -1
-
-
-# ---------------------------------------------------------------------------
-# Hermiticity and structure after build
-# ---------------------------------------------------------------------------
-
-class TestHermiticity:
-    @pytest.mark.parametrize("truncation,cls", [
-        ('full', HamiltonianFull),
-        ('truncated', HamiltonianTruncated),
-        ('truncated+atom', HamiltonianAtom),
-    ])
-    def test_hermitian(self, truncation, cls):
-        cfg = make_cfg(truncation)
-        h = built(cls, cfg)
-        M = h.H.toarray()
-        np.testing.assert_allclose(M, M.conj().T, atol=1e-12)
-
-    @pytest.mark.parametrize("truncation,cls", [
-        ('full', HamiltonianFull),
-        ('truncated', HamiltonianTruncated),
-        ('truncated+atom', HamiltonianAtom),
-    ])
-    def test_real_diagonal(self, truncation, cls):
-        cfg = make_cfg(truncation)
-        h = built(cls, cfg)
-        diag = h.H.toarray().diagonal()
-        np.testing.assert_allclose(diag.imag, 0, atol=1e-12)
-
-    @pytest.mark.parametrize("truncation,cls", [
-        ('full', HamiltonianFull),
-        ('truncated', HamiltonianTruncated),
-        ('truncated+atom', HamiltonianAtom),
-    ])
-    def test_vacuum_ground_energy_zero(self, truncation, cls):
-        """Ground state with no photons has zero free energy."""
-        cfg = make_cfg(truncation, atom_state='g')
-        h = built(cls, cfg)
-        idx = h.state_to_index({'n1': 0, 'atom': 'g'})
-        assert np.isclose(h.H[idx, idx], 0.0, atol=1e-12)
-
-    def test_zero_coupling_gives_diagonal(self):
-        """With g=0 the interaction is zero and the matrix is diagonal."""
-        cfg = make_cfg('full', g=0.0)
-        h = built(HamiltonianFull, cfg)
-        M = h.H.toarray()
-        off_diag = M - np.diag(M.diagonal())
-        np.testing.assert_allclose(np.abs(off_diag), 0, atol=1e-12)
-
-
-# ---------------------------------------------------------------------------
-# hamiltonian() factory
-# ---------------------------------------------------------------------------
-
-class TestHamiltonianFactory:
-    @pytest.mark.parametrize("truncation", ['full', 'truncated', 'truncated+atom'])
-    def test_returns_qobj(self, truncation):
-        cfg = make_cfg(truncation)
-        H = hamiltonian(cfg)
-        assert isinstance(H, qutip.Qobj)
-
-    @pytest.mark.parametrize("truncation,cls", [
-        ('full', HamiltonianFull),
-        ('truncated', HamiltonianTruncated),
-        ('truncated+atom', HamiltonianAtom),
-    ])
-    def test_correct_dimension(self, truncation, cls):
-        cfg = make_cfg(truncation)
-        H = hamiltonian(cfg)
-        d = cls(cfg).compute_dim()
-        assert H.shape == (d, d)
-
-    @pytest.mark.parametrize("truncation", ['full', 'truncated', 'truncated+atom'])
-    def test_hermitian_qobj(self, truncation):
-        cfg = make_cfg(truncation)
-        H = hamiltonian(cfg)
-        M = H.full()
-        np.testing.assert_allclose(M, M.conj().T, atol=1e-12)
+def test_spatial_phase_is_a_field_gauge_transform():
+    basis=FockBasis(3,2,'full+totalcap'); k=np.array([-1.,0.,1.])
+    atom={'L':6.,'omega_0':1.,'D':.3,'x_tls':0.,'coupling':'sqrt'}
+    h0=Hamiltonian(basis,k,atom).build_hamiltonian().full()
+    x=.4
+    hx=Hamiltonian(basis,k,{**atom,'x_tls':x}).build_hamiltonian().full()
+    u=np.repeat(np.exp(1j*x*(np.array(basis.states)@k)),2)
+    assert_allclose(hx,u[:,None]*h0*u.conj()[None,:])

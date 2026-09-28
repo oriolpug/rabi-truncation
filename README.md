@@ -1,109 +1,80 @@
 # rabi-truncation
 
-Quantum Rabi model simulator for studying how different Hilbert-space truncation schemes affect time evolution fidelity in a two-level atom coupled to a multi-mode photon field.
+Finite multimode Rabi dynamics, photon-space truncation comparisons, and Gaussian-packet scattering. One engine lives in `src/`; callable experiments live in `experiment/` and are controlled by six notebooks in `notebooks/`.
 
-## Research question
+The conventions are `hbar = c = 1`, field frequencies `abs(k)`, and
 
-How much does truncating the photon Fock space affect the fidelity of the time-evolved state relative to the full (unconstrained) basis? Three truncation schemes are compared.
+\[
+H = H_0 + D\sum_m (u_m a_m + u_m^* a_m^\dagger)\sigma_x,
+\qquad u_m = i f_m e^{-ik_m x_{\rm tls}}/\sqrt L,
+\]
 
-## Truncation schemes
+with `coupling='sqrt'` giving `f_m=sqrt(abs(k_m))`, or `coupling='flat'` giving `f_m=1`. All migrated Uri notebooks use `sqrt`.
 
-| Name | Description | Hilbert-space dim |
-|---|---|---|
-| `"full"` | All Fock states up to cap per mode | 2(N+1)^M |
-| `"truncated"` | Vacuum + single-mode excitations only | 2(MN+1) |
-| `"truncated+atom"` | Truncated + atom oscillator mode | 2(MN+1)(N+1) |
+## Install and run
 
-where M = number of photon modes, N = excitation cap.
-
-## Repository layout
-
-```
-src/
-  utilities.py     # Config dataclass, StateType hierarchy, wave-vector grid, purity/entropy
-  states.py        # Basis mixins + State classes + state() factory
-  hamiltonians.py  # Basis mixins + Hamiltonian classes + hamiltonian() factory
-  fidelities.py    # common_basis(), fidelity_statevector()
-  simulation.py    # Simulation class — orchestrates H build, state init, sesolve, observables
-tests/
-  conftest.py
-  test_states.py
-  test_hamiltonians.py
-  test_utilities.py
-  test_fidelities.py
-```
-
-## Installation
-
-Python 3.12+ required. Install dependencies into a virtual environment:
-
-```bash
-python -m venv .venv
+```sh
+python3 -m venv .venv
 source .venv/bin/activate
-pip install numpy scipy qutip matplotlib
+python -m pip install -e '.[dev,notebooks]'
+python -m pytest tests -q
 ```
 
-## Running tests
-
-```bash
-.venv/bin/python -m pytest tests/ -v           # all tests
-.venv/bin/python -m pytest tests/test_states.py -v    # single file
-```
-
-## Basic usage
+Open a notebook in `notebooks/` using this Python environment. Its parameter cell defines the physical model; its next cell prints the grid and memory estimate before running. Notebook outputs are deliberately empty in the repository.
 
 ```python
-from src.utilities import Config, NumberState
-from src.simulation import Simulation
-from src.fidelities import fidelity_statevector
+import numpy as np
+from experiment.scattering import run_scattering
+from src.experiment import resource_estimation
 
-# Full basis simulation
-config_full = Config(modes=4, truncation="full", excitation_cap=3, t=10.0, dt=0.1)
-sim_full = Simulation(config_full)
-sim_full.time_evolve()
+param_atom = {'omega_0': 1., 'D': .2, 'L': 2*np.pi,
+              'x_tls': 0., 'coupling': 'sqrt'}
+param_photon = {'k_0': 1., 'sigma_k': .4, 'x_0': -2.}
+param_time_evol = {'T': 4., 'dt': .05}
+cutoffs = {'ir_cutoff': 0., 'uv_cutoff': 2.}
+CTRL_M_EXPLICIT = True
+M = 5
 
-# Truncated basis simulation (same physical parameters)
-config_trunc = Config(modes=4, truncation="truncated", excitation_cap=3, t=10.0, dt=0.1)
-sim_trunc = Simulation(config_trunc)
-sim_trunc.time_evolve()
-
-# Compare fidelity at final time
-state_full = sim_full.result.states[-1]
-state_trunc = sim_trunc.result.states[-1]
-F = fidelity_statevector(state_full, state_trunc)
-print(f"Fidelity: {F:.6f}")
+estimate = resource_estimation(param_atom, param_time_evol, cutoffs,
+                               n_max=2, CTRL_M_EXPLICIT=CTRL_M_EXPLICIT, M=M)
+experiment = run_scattering(param_photon, param_atom, param_time_evol, cutoffs,
+                            n_max=2, CTRL_M_EXPLICIT=CTRL_M_EXPLICIT, M=M)
 ```
 
-## Key configuration parameters
+## Momentum control and bases
 
-| Parameter | Default | Description |
+- `CTRL_M_EXPLICIT=True`: choose `L` and an odd positive `M`. The grid has exactly `M` points, is symmetric, and includes zero. An even `M` raises `ValueError`.
+- `CTRL_M_EXPLICIT=False`: choose `L` and `ir_cutoff <= abs(k) <= uv_cutoff`. The count follows from the cutoffs. Zero is included when `ir_cutoff=0`; a positive IR cutoff excludes it by the band definition.
+
+Both controls use `delta_k=2*pi/L`. The estimator reports effective cutoffs, actual mode counts, zero-mode presence, and whether the other control can reproduce the same grid. Optional mode selection is an additional restriction; it can produce holes or asymmetric subsets.
+
+| Photon basis | Constraint | Ket dimension |
 |---|---|---|
-| `modes` | 64 | Number of photon modes |
-| `length` | 10π | System length (sets wave-vector grid) |
-| `g` | 0.01 | Atom-photon coupling strength |
-| `w_atom` | 1.0 | Atom transition frequency |
-| `excitation_cap` | 3 | Max photons per mode (N) |
-| `truncation` | `"full"` | Truncation scheme |
-| `RWA` | `False` | Rotating-wave approximation |
-| `t` | 10.0 | Total evolution time |
-| `dt` | 0.1 | Time step |
-| `atom_state` | `"g"` | Initial atom state (`"g"`, `"e"`, `"+"`, `"-"`) |
-| `state` | `NumberState` | Initial photon state type (`NumberState`, `CoherentState`) |
+| `truncated` | At most one occupied mode, occupation at most N | `2*(1+M*N)` |
+| `full+totalcap` | Total photon number at most N | `2*comb(M+N,N)` |
+| `full` | Each mode occupation at most N | `2*(N+1)**M` |
 
-## Observables
+Gaussian preparation uses `exp(-(k-k_0)**2/(4*sigma_k**2))*exp(-i*k*x_0)` on **all selected signed modes**. Number states (`n=0` allowed) and product coherent states are projected and normalized on the chosen basis.
 
-After calling `time_evolve()`, the `Simulation` object provides:
+## Experiments and fidelity
 
-```python
-sim.compute_atom_density_matrix()    # 2×2 reduced density matrix (full time series or at time t)
-sim.compute_excited_probability()    # P(excited) over time
-sim.compute_entropy()                # von Neumann entropy of atom subsystem
-sim.compute_energy()                 # ⟨H⟩ over time
+The notebooks cover TLS evolution, energy profiles and animation, total-cap convergence, a `D` sweep, mode selection, and scattering. Each notebook calls the matching Python module.
+
+```sh
+python -m experiment.scattering --D 0.2 --ctrl-m-explicit --M 5
+python -m experiment.sweep_D_fidelity --D-values 0.02,0.1,0.2 --out results/sweep.png
+python experiments_Uri/energy_profile.py --D 0.2 --out results/energy.png --gif results/energy.gif
 ```
 
-## Dependencies
+The five historical `experiments_Uri/` script paths remain runnable as delegates. Parameters now follow the shared `D`, `L`, `M`, `sigma_k`, `n_max`, `T` conventions and `--option value` CLI. The historical filename `sweep_g_fidelity.py` delegates to `experiment/sweep_D_fidelity.py`.
 
-- [NumPy](https://numpy.org/) >= 2.4
-- [SciPy](https://scipy.org/) >= 1.17
-- [QuTiP](https://qutip.org/) >= 5.2
-- [Matplotlib](https://matplotlib.org/) >= 3.10
+Only `F_state` and `F_atom` are calculated. The common `full` space is **implicit**: overlaps align physical momenta and retain every shared Fock configuration, without allocating full-space vectors or projecting/renormalizing onto the intersection. A simulated comparator such as `full+totalcap` is a separate choice. Coherent projections can already disagree at time zero; the notebooks display initial fidelities.
+
+Scattering populations in positive, negative and zero momentum one-photon ground-TLS sectors are reported directly. With an incident packet containing both signs, these populations are channel occupations; identifying an asymptotic transmission/reflection coefficient requires additional physical assumptions explained in the documentation. With the imposed annihilation phase `exp(-i*k*x_tls)` and the positive Fourier reconstruction `exp(i*k*x)`, the plotted interaction coordinate is `-x_tls`; the documentation derives this sign explicitly.
+
+The [mathematical and code documentation](documentation/main.pdf) is in English and organized into three main sections. It derives the grid controls, coherent projection weights, Hamiltonian and symmetries, observables, fidelity embedding and resource costs; documents experiment outputs; and compares the patch with the student implementation, including parameter conversions and validation limits. Source listings have comments tied to their current line ranges. Its [LaTeX source](documentation/main.tex) and [line-comment generator](documentation/build_code_notes.py) are included. Rebuild from the repository root:
+
+```sh
+python documentation/build_code_notes.py
+latexmk -pdf -cd documentation/main.tex
+```

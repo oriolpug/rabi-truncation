@@ -1,189 +1,68 @@
-"""Tests for utilities.py: Config, calculate_wave_vectors, purity, entropy."""
 import numpy as np
 import pytest
-import qutip
+from numpy.testing import assert_allclose
 
-from utilities import (Config, NumberState, CoherentState, calculate_wave_vectors,
-                       select_modes, purity, entropy)
-
-
-# ---------------------------------------------------------------------------
-# calculate_wave_vectors
-# ---------------------------------------------------------------------------
-
-class TestCalculateWaveVectors:
-    def test_output_length(self):
-        ks = calculate_wave_vectors(8, 10 * np.pi)
-        assert len(ks) == 8
-
-    def test_output_is_real(self):
-        ks = calculate_wave_vectors(8, 10 * np.pi)
-        assert np.all(np.isreal(ks))
-
-    def test_values_within_nyquist_band(self):
-        n, L = 16, 10 * np.pi
-        ks = calculate_wave_vectors(n, L)
-        k_max = n * np.pi / L
-        assert np.all(np.abs(ks) <= k_max + 1e-12)
-
-    def test_evenly_spaced(self):
-        ks = calculate_wave_vectors(8, 10 * np.pi)
-        spacing = np.diff(np.sort(ks))
-        assert np.allclose(spacing, spacing[0], atol=1e-12)
-
-    def test_contains_zero(self):
-        # For even n the zero mode is present before Config removes it
-        ks = calculate_wave_vectors(8, 10 * np.pi)
-        assert 0.0 in ks
+from src.grid import momentum_modes, resolve_grid, grid_summary
+from src.experiment import estimate_config, output_times
+from src.xp_config import ExperimentConfig
 
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-class TestConfig:
-    def test_default_creation(self):
-        cfg = Config(modes=1)
-        assert cfg.modes == 1
-        assert cfg.excitation_cap == 3
-
-    def test_single_mode_frequency_equals_k_photon(self):
-        cfg = Config(modes=1)
-        assert cfg.frequencies == [cfg.k_photon]
-
-    def test_atom_coeffs_ground(self):
-        cfg = Config(modes=1, atom_state='g')
-        assert cfg.atom_coeffs == {'g': 1, 'e': 0}
-
-    def test_atom_coeffs_excited(self):
-        cfg = Config(modes=1, atom_state='e')
-        assert cfg.atom_coeffs == {'g': 0, 'e': 1}
-
-    def test_atom_coeffs_plus(self):
-        cfg = Config(modes=1, atom_state='+')
-        assert np.isclose(cfg.atom_coeffs['g'], 1 / np.sqrt(2))
-        assert np.isclose(cfg.atom_coeffs['e'], 1 / np.sqrt(2))
-
-    def test_multimode_modes_decremented_when_zero_removed(self):
-        # Config decrements modes when the zero frequency is dropped
-        cfg = Config(modes=8)
-        assert cfg.modes == 7  # zero mode removed
-
-    def test_multimode_ks_has_no_zero(self):
-        # cfg.ks holds the zero-free frequency array
-        cfg = Config(modes=8)
-        assert 0.0 not in cfg.ks
-
-    def test_multimode_frequencies_zero_free_and_consistent(self):
-        # Baseline fix: the simulation grid (frequencies) is the zero-free grid,
-        # and its length matches the (decremented) mode count.
-        cfg = Config(modes=8)
-        assert 0.0 not in list(cfg.frequencies)
-        assert len(cfg.frequencies) == cfg.modes
-        np.testing.assert_array_equal(np.asarray(cfg.frequencies), np.asarray(cfg.ks))
-
-    def test_state_field_stored(self):
-        st = NumberState(2)
-        cfg = Config(modes=1, state=st)
-        assert cfg.state is st
-
-    def test_rwa_default_false(self):
-        cfg = Config(modes=1)
-        assert cfg.RWA is False
+def config(**kwargs):
+    return ExperimentConfig({'k_0': 1., 'sigma_k': .3, 'x_0': 0.},
+                            {'L': 2*np.pi, 'omega_0': 1., 'D': .2, 'x_tls': 0., 'coupling': 'sqrt'},
+                            {'T': .3, 'dt': .1}, {'ir_cutoff': 0., 'uv_cutoff': 2.}, **kwargs)
 
 
-# ---------------------------------------------------------------------------
-# select_modes + Config(mode_selection=True)
-# ---------------------------------------------------------------------------
-
-class TestSelectModes:
-    def test_mask_length_and_type(self):
-        freqs = calculate_wave_vectors(16, 20.0)
-        mask = select_modes(freqs, k_photon=1.0, sigma=1.0, w_atom=1.0,
-                            photon_factor=1.5, atom_factor=0.25)
-        assert mask.dtype == bool
-        assert len(mask) == len(freqs)
-        assert mask.any()
-
-    def test_selected_obey_predicate_or_are_nearest(self):
-        freqs = np.asarray(calculate_wave_vectors(32, 20.0))
-        k0, sigma, w = 0.8, 1.0, 1.2
-        pf, af = 1.5, 0.25
-        mask = select_modes(freqs, k0, sigma, w, pf, af)
-        centres = [(k0, pf * sigma), (w, af * sigma), (-w, af * sigma)]
-        nearest = {np.argmin(np.abs(freqs - c)) for c, _ in centres}
-        for i, keep in enumerate(mask):
-            if not keep:
-                continue
-            in_window = any(abs(freqs[i] - c) <= h for c, h in centres)
-            assert in_window or i in nearest
-
-    def test_each_centre_represented(self):
-        # Even with a tiny sigma (all windows narrower than the spacing), the nearest
-        # mode to each of the three centres must be present.
-        freqs = np.asarray(calculate_wave_vectors(32, 20.0))
-        k0, sigma, w = 0.5, 1e-6, 1.0
-        mask = select_modes(freqs, k0, sigma, w, 1.5, 0.25)
-        for centre in (k0, w, -w):
-            assert mask[np.argmin(np.abs(freqs - centre))]
-
-    def test_config_mode_selection_subset_and_consistent(self):
-        full = Config(modes=64, length=20)
-        sel = Config(modes=64, length=20, mode_selection=True)
-        # consistency invariant
-        assert len(sel.frequencies) == sel.modes
-        # strictly fewer modes, and a subset of the full zero-free grid
-        assert sel.modes < full.modes
-        assert set(np.round(sel.frequencies, 10)).issubset(set(np.round(full.frequencies, 10)))
-        assert 0.0 not in list(sel.frequencies)
-
-    def test_config_mode_selection_off_unchanged(self):
-        # Regression guard: default path still drops exactly the zero mode.
-        cfg = Config(modes=8)
-        assert cfg.modes == 7
-        assert cfg.mode_selection is False
+@pytest.mark.parametrize('M', [1, 3, 5, 9])
+def test_explicit_grid_is_symmetric_and_keeps_exact_M(M):
+    grid = momentum_modes({'L': 2*np.pi}, CTRL_M_EXPLICIT=True, M=M)
+    assert len(grid) == M and 0 in grid
+    assert_allclose(grid, -grid[::-1])
+    assert_allclose(grid, np.arange(-(M//2), M//2+1))
 
 
-# ---------------------------------------------------------------------------
-# purity
-# ---------------------------------------------------------------------------
-
-class TestPurity:
-    def test_pure_state_purity_one(self):
-        rho = np.array([[1, 0], [0, 0]], dtype=complex)
-        assert np.isclose(purity(rho), 1.0, atol=1e-12)
-
-    def test_maximally_mixed_purity(self):
-        rho = np.array([[0.5, 0], [0, 0.5]], dtype=complex)
-        assert np.isclose(purity(rho), 0.5, atol=1e-12)
-
-    def test_accepts_qobj(self):
-        rho = qutip.Qobj(np.array([[1, 0], [0, 0]], dtype=complex))
-        assert np.isclose(purity(rho), 1.0, atol=1e-12)
-
-    def test_purity_between_zero_and_one(self):
-        rho = np.array([[0.7, 0.1], [0.1, 0.3]], dtype=complex)
-        p = purity(rho)
-        assert 0.0 <= float(np.real(p)) <= 1.0 + 1e-12
+@pytest.mark.parametrize('M', [0, 2, 4, -3, 3.0, True])
+def test_invalid_M_is_rejected(M):
+    with pytest.raises(ValueError):
+        momentum_modes({'L': 2*np.pi}, CTRL_M_EXPLICIT=True, M=M)
 
 
-# ---------------------------------------------------------------------------
-# entropy
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize('ir,uv,expected', [(0, 2, [-2,-1,0,1,2]), (.2, 2.8, [-2,-1,1,2]),
+                                          (1, 1, [-1,1]), (0,0,[0]), (1e-15,1,[-1,1])])
+def test_cutoff_control_and_zero_policy(ir, uv, expected):
+    assert_allclose(momentum_modes({'L': 2*np.pi}, {'ir_cutoff': ir, 'uv_cutoff': uv}), expected)
 
-class TestEntropy:
-    def test_pure_state_entropy_zero(self):
-        rho = np.array([[1, 0], [0, 0]], dtype=complex)
-        assert np.isclose(entropy(rho), 0.0, atol=1e-10)
 
-    def test_maximally_mixed_entropy(self):
-        rho = np.array([[0.5, 0], [0, 0.5]], dtype=complex)
-        assert np.isclose(entropy(rho), np.log(2), atol=1e-10)
+@pytest.mark.parametrize('ir,uv', [(-1,2),(2,1),(np.nan,2),(.1,.2)])
+def test_invalid_or_empty_bands(ir, uv):
+    with pytest.raises(ValueError):
+        momentum_modes({'L': 2*np.pi}, {'ir_cutoff': ir, 'uv_cutoff': uv})
 
-    def test_accepts_qobj(self):
-        rho = qutip.Qobj(np.array([[0.5, 0], [0, 0.5]], dtype=complex))
-        assert np.isclose(entropy(rho), np.log(2), atol=1e-10)
 
-    def test_entropy_nonnegative(self):
-        rho = np.array([[0.8, 0.1], [0.1, 0.2]], dtype=complex)
-        assert entropy(rho) >= -1e-10
+def test_modes_and_cutoffs_produce_identical_grid_and_resources():
+    a, b = config(CTRL_M_EXPLICIT=True, M=5), config()
+    assert_allclose(resolve_grid(a)[1], resolve_grid(b)[1])
+    for item in (a, b):
+        estimate = estimate_config(item, print_report=False)
+        assert estimate['n_modes'] == 5
+        assert estimate['dimension'] == 2*56
+        assert estimate['grid']['selected']['equivalent_M'] == 5
+        assert estimate['grid']['selected']['zero_present']
+        assert estimate['n_times'] == 4
+
+
+def test_selection_reports_when_two_parameters_cannot_encode_the_grid():
+    item = config(mode_selection=True, photon_window=0, atom_window=0)
+    base, selected = resolve_grid(item)
+    assert_allclose(selected, [-1,1])
+    info = grid_summary(base, selected, 2*np.pi)
+    assert info['selected']['equivalent_M'] is None
+    assert info['selected']['radial_cutoffs_exact']
+    assert not info['selected']['zero_present']
+    info = grid_summary(base, np.array([-1.,1.,2.]), 2*np.pi)
+    assert not info['selected']['radial_cutoffs_exact']
+
+
+@pytest.mark.parametrize('T,dt,expected', [(.3,.1,[0,.1,.2,.3]), (.35,.1,[0,.1,.2,.3,.35]),(.05,.1,[0,.05]),(1e-15,1,[0,1e-15])])
+def test_output_times_keep_zero_and_exact_final_time(T, dt, expected):
+    assert_allclose(output_times({'T': T, 'dt': dt}), expected)
