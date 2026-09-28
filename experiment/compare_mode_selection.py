@@ -12,6 +12,37 @@ def run_mode_selection(config, D_values=(0.02, 0.1, 0.2),
                        schemes=('truncated', 'full+totalcap'),
                        photon_windows=(0.5, 1.5, 3.0), atom_windows=(0.0, 0.5, 1.5),
                        D_heatmap=None, progress=False):
+    """Measure truncation and selected-grid differences from an unselected run.
+
+    Parameters
+    ----------
+    config : ExperimentConfig
+        Shared inputs, requiring store_state=True. The simulated comparator
+        always uses the unselected 'full+totalcap' basis at the same D.
+    D_values : array_like of float, optional
+        Couplings (Q,) for the selection-on/off sweep.
+    schemes : iterable[str], optional
+        S candidate photon bases, default ('truncated', 'full+totalcap').
+    photon_windows : array_like of float, optional
+        P nonnegative packet-window radii w_p in units of sigma_k.
+    atom_windows : array_like of float, optional
+        A nonnegative resonance-window radii w_a in units of sigma_k.
+    D_heatmap : float or None, optional
+        Fixed coupling for the window scan; None uses config.param_atom['D'].
+    progress : bool, optional
+        Show solver progress for each trajectory.
+
+    Returns
+    -------
+    dict[str, object]
+        D (Q,), schemes (S,), selection flags [False,True], window arrays
+        (P,)/(A,), and D_heatmap. F_state/F_atom and their _initial arrays
+        have shape (S,2,Q), ordered by scheme, selection flag, then coupling.
+        Mean-only _heatmap arrays have shape (S,P,A). Means are arithmetic
+        averages over stored output times. Missing selected modes are vacuum
+        in the common full embedding, and selected preparations are normalized
+        on their own grids, so initial fidelities can already be below one.
+    """
     if not config.store_state:
         raise ValueError('Time-mean comparisons require store_state=True')
     D_values = np.asarray(D_values, dtype=float)
@@ -45,6 +76,20 @@ def run_mode_selection(config, D_values=(0.02, 0.1, 0.2),
 
 
 def plot_mode_selection(results):
+    """Plot selection-on/off sweeps and fixed-D window scans for both fidelities.
+
+    Parameters
+    ----------
+    results : dict[str, object]
+        run_mode_selection output with sweep arrays (S,2,Q) and maps (S,P,A).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        (S+1)-by-2 panels: top row shows sample-mean fidelity against D;
+        remaining rows show one basis per window map. Map slices are transposed
+        for horizontal photon window and vertical atom window coordinates.
+    """
     import matplotlib.pyplot as plt
     schemes = results['schemes']
     fig, axes = plt.subplots(len(schemes) + 1, 2, figsize=(11, 3 * (len(schemes) + 1)), squeeze=False)
@@ -68,6 +113,20 @@ def plot_mode_selection(results):
 
 
 def main(argv=None):
+    """Run selection and window sweeps and export fidelity arrays.
+
+    Parameters
+    ----------
+    argv : list[str] or None, optional
+        CLI arguments without the program name. None reads sys.argv[1:].
+
+    Returns
+    -------
+    None
+        Parses parameters, displays resource tables, simulates and plots.
+        --out saves the figure plus a same-stem NPZ; otherwise displays it.
+        Argument parsing may raise SystemExit for --help or invalid input.
+    """
     p = parser(__doc__)
     p.add_argument('--D-values', default='0.02,0.1,0.2')
     p.add_argument('--photon-windows', default='0.5,1.5,3.0')

@@ -9,6 +9,29 @@ from ._common import config_from_args, finish, parser, run
 
 
 def run_cap_convergence(config, caps=(1, 2, 3, 4), progress=False):
+    """Compare neighboring total-photon caps in the implicit ambient full basis.
+
+    Parameters
+    ----------
+    config : ExperimentConfig
+        Shared preparation and dynamics; basis/storage are replaced in copies.
+    caps : iterable[int], optional
+        At least two strictly increasing nonnegative caps N_j; defaults 1..4.
+        Number preparation must fit every cap; coherent input is projected
+        and normalized independently at each cap.
+    progress : bool, optional
+        Show solver progress.
+
+    Returns
+    -------
+    dict[str, object]
+        ``caps`` integer array (C,), ``runs`` list of C propagated Experiments;
+        F_state/F_atom and their _initial counterparts are float arrays (C-1,).
+        Element j compares N_j with N_(j+1), at T or zero respectively. All
+        trajectories use 'full+totalcap' and store only the final evolved ket.
+        Squared fidelities include initial projection differences; no common
+        intersection normalization or ambient full-space allocation is used.
+    """
     caps = list(caps)
     if len(caps) < 2 or any(b <= a for a, b in zip(caps, caps[1:])):
         raise ValueError('At least two strictly increasing caps are required')
@@ -26,6 +49,20 @@ def run_cap_convergence(config, caps=(1, 2, 3, 4), progress=False):
 
 
 def plot_cap_convergence(results):
+    """Plot initial and final squared fidelities between adjacent requested caps.
+
+    Parameters
+    ----------
+    results : dict[str, object]
+        run_cap_convergence output; caps (C,), metric arrays (C-1,).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        F_state and F_atom panels against the lower cap N_j of each compared
+        pair. Solid curves are final metrics; dashed curves are initial ones.
+        Consecutive requested caps need not differ by exactly one.
+    """
     import matplotlib.pyplot as plt
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     for ax, name in zip(axes, ('F_state', 'F_atom')):
@@ -38,6 +75,20 @@ def plot_cap_convergence(results):
 
 
 def main(argv=None):
+    """Run total-cap convergence and export initial/final fidelities.
+
+    Parameters
+    ----------
+    argv : list[str] or None, optional
+        CLI arguments without the program name. None reads sys.argv[1:].
+
+    Returns
+    -------
+    None
+        Parses parameters, displays resource tables, simulates and plots.
+        --out saves the figure plus a same-stem NPZ; otherwise displays it.
+        Argument parsing may raise SystemExit for --help or invalid input.
+    """
     p = parser(__doc__)
     p.set_defaults(photon_state='coherent')
     p.add_argument('--caps', default='1,2,3,4')

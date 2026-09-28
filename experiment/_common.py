@@ -12,6 +12,21 @@ from src.xp_config import ExperimentConfig
 
 
 def run(config, progress=False):
+    """Build, propagate and diagnose one configuration using the shared engine.
+
+    Parameters
+    ----------
+    config : ExperimentConfig
+        Complete physical, basis, grid and solver inputs; not modified here.
+    progress : bool, optional
+        Show the solver's progress bar when True.
+
+    Returns
+    -------
+    Experiment
+        Propagated object with result, coefficient arrays and raw observables.
+        Storage follows config.store_state; no plotting or export occurs.
+    """
     experiment = Experiment(config)
     experiment.propagate_state(progress=progress)
     experiment.compute_observables()
@@ -19,6 +34,23 @@ def run(config, progress=False):
 
 
 def save_arrays(path, config, **arrays):
+    """Save numerical experiment arrays with their input configuration in NPZ.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Destination archive; parent directories are created if needed.
+    config : ExperimentConfig
+        Base configuration serialized as JSON under ``configuration_json``.
+    **arrays : array_like
+        Named numerical arrays or NumPy-compatible metadata to store.
+
+    Returns
+    -------
+    None
+        Writes/overwrites the archive. Non-JSON configuration values (such as
+        complex alpha) stringify; sweep-specific inputs belong in the arrays.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     metadata = json.dumps(asdict(config), default=lambda value: str(value))
@@ -26,6 +58,21 @@ def save_arrays(path, config, **arrays):
 
 
 def parser(description):
+    """Create the shared command-line parser in the current physical conventions.
+
+    Parameters
+    ----------
+    description : str
+        Module description displayed by --help.
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        Parser for D, L, omega_0, x_tls, sqrt/flat profile, grid control, packet
+        preparation, TLS state, photon cap, T/dt, RWA, output path and progress.
+        It does not parse arguments yet. Coupling defaults to sqrt; cutoff
+        control is the default, and --ctrl-m-explicit activates the M input.
+    """
     p = argparse.ArgumentParser(description=description)
     p.add_argument('--D', type=float, default=0.2)
     p.add_argument('--L', type=float, default=2 * np.pi)
@@ -54,6 +101,21 @@ def parser(description):
 
 
 def config_from_args(args):
+    """Convert parsed shared CLI inputs into the dictionary-based configuration.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Values obtained from parser, possibly extended by an experiment module.
+
+    Returns
+    -------
+    ExperimentConfig
+        Three physical/solver dictionaries and basis/grid settings, with
+        store_state=True by default. Both M and cutoffs are retained, but only
+        the active control defines the grid. No historical g-to-D conversion
+        is inferred from numerical values supplied by the user.
+    """
     return ExperimentConfig(
         param_photon={'k_0': args.k_0, 'sigma_k': args.sigma_k, 'x_0': args.x_0,
                       'state': args.photon_state, 'n': args.n, 'alpha': args.alpha},
@@ -66,6 +128,25 @@ def config_from_args(args):
 
 
 def finish(fig, args, config, **arrays):
+    """Display a completed figure or export it alongside numerical arrays.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        Figure returned by a plot function.
+    args : argparse.Namespace
+        Contains ``out`` (pathlib.Path or None) from the shared parser.
+    config : ExperimentConfig
+        Configuration included in the corresponding NPZ archive.
+    **arrays : array_like
+        Named arrays/metadata to export when out is supplied.
+
+    Returns
+    -------
+    None
+        With out, creates parents, saves the figure at 150 dpi and a same-stem
+        .npz archive, then closes the figure. Otherwise calls pyplot.show().
+    """
     import matplotlib.pyplot as plt
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)

@@ -9,6 +9,31 @@ from ._common import config_from_args, finish, parser, run
 
 
 def run_coupling_sweep(config, D_values, schemes=('truncated',), reference='full+totalcap', progress=False):
+    """Sweep physical D and compare each candidate with a simulated trajectory.
+
+    Parameters
+    ----------
+    config : ExperimentConfig
+        Shared inputs; D and basis are changed in copies, with histories forced.
+    D_values : array_like of float
+        Nonempty finite vector (Q,) of physical couplings in H=H0+D*V.
+    schemes : iterable[str], optional
+        S candidate basis names, default ('truncated',).
+    reference : str, optional
+        Simulated comparator basis, default 'full+totalcap'. This choice is
+        separate from the implicit full basis used to calculate overlaps.
+    progress : bool, optional
+        Show solver progress for each trajectory.
+
+    Returns
+    -------
+    dict[str, object]
+        D array (Q,), schemes tuple (S,), reference string, and four float
+        arrays (S,Q): F_state/F_atom are arithmetic sample means
+        sum_j F(t_j)/N_t; _initial arrays contain F(0). These are neither final
+        fidelities nor quadrature approximations to an integral time average.
+        Identical candidate/comparator schemes reuse the comparator run.
+    """
     D_values = np.asarray(D_values, dtype=float)
     if D_values.ndim != 1 or len(D_values) == 0 or not np.isfinite(D_values).all():
         raise ValueError('D_values must be a nonempty finite one-dimensional array')
@@ -30,6 +55,19 @@ def run_coupling_sweep(config, D_values, schemes=('truncated',), reference='full
 
 
 def plot_coupling_sweep(results):
+    """Plot sample-mean and initial squared fidelities versus physical D.
+
+    Parameters
+    ----------
+    results : dict[str, object]
+        run_coupling_sweep output with D (Q,) and metrics (S,Q).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        Two metric panels; one solid mean curve per scheme and dashed initial
+        curves. The figure is returned without display or export.
+    """
     import matplotlib.pyplot as plt
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     for ax, name in zip(axes, ('F_state', 'F_atom')):
@@ -43,6 +81,20 @@ def plot_coupling_sweep(results):
 
 
 def main(argv=None):
+    """Run the physical-D sweep and export sample-mean/initial metrics.
+
+    Parameters
+    ----------
+    argv : list[str] or None, optional
+        CLI arguments without the program name. None reads sys.argv[1:].
+
+    Returns
+    -------
+    None
+        Parses parameters, displays resource tables, simulates and plots.
+        --out saves the figure plus a same-stem NPZ; otherwise displays it.
+        Argument parsing may raise SystemExit for --help or invalid input.
+    """
     p = parser(__doc__)
     p.add_argument('--D-values', default='0.02,0.1,0.2')
     p.add_argument('--schemes', default='truncated')

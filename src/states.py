@@ -10,7 +10,44 @@ from .grid import integer
 
 
 class FockBasis:
+    """Occupation tuples and joint field/TLS indexing for one finite basis.
+
+    Attributes
+    ----------
+    states : list[tuple[int, ...]]
+        B retained field occupations n=(n_0,...,n_{M-1}); each tuple has M entries.
+    index : dict[tuple[int, ...], int]
+        Inverse lookup n -> i. Joint ket component q=2*i+s uses s=0 (g), 1 (e).
+    photon_numbers : numpy.ndarray
+        Integer array (B,) with sum_m n_m for each occupation, excluding the TLS.
+    modes, cap : int
+        Retained mode count M and photon cutoff N.
+    truncation : str
+        Basis constraint used to enumerate states.
+    dim : int
+        Joint ket dimension d=2*B, including the TLS binary factor.
+    """
     def __init__(self, modes, cap, truncation):
+        """Enumerate the retained field occupations and their TLS indexing.
+
+        Parameters
+        ----------
+        modes : int
+            Positive number M of retained physical field modes.
+        cap : int
+            Nonnegative photon cutoff N (``n_max``).
+        truncation : {'truncated', 'full+totalcap', 'full'}
+            Retain vacuum plus n*e_m; all tuples with sum(n_m)<=N; or all tuples
+            with each n_m<=N, respectively. Their field counts B are 1+M*N,
+            binomial(M+N,N), and (N+1)**M. e_m denotes the unit occupation vector.
+
+        Returns
+        -------
+        None
+            Sets states, index, photon_numbers and dim on this instance. Vacuum is
+            included for every scheme. Enumeration order is scheme-dependent; use
+            index rather than assuming a tuple occupies the same position elsewhere.
+        """
         self.modes = modes = integer(modes, "modes", minimum=1)
         self.cap = cap = integer(cap, "n_max")
         self.truncation = truncation
@@ -38,7 +75,40 @@ class FockBasis:
 
 
 def initial_state(basis, k_tab, param_photon, param_atom):
-    """Project a preparation onto the basis and normalize it once."""
+    """Prepare and normalize a projected Gaussian field state times a TLS state.
+
+    Parameters
+    ----------
+    basis : FockBasis
+        Retained occupation set, with d=2*B joint ket components.
+    k_tab : array_like of float
+        Shape (M,), one signed momentum per occupation entry in basis order.
+    param_photon : dict[str, object]
+        Finite ``k_0``, ``x_0``, positive ``sigma_k``; ``state`` is 'number'
+        (default) or 'coherent'. Number preparation uses integer ``n`` (default
+        1, 0<=n<=N); coherent preparation uses finite complex ``alpha`` (default 1).
+    param_atom : dict[str, object]
+        Optional ``initial_state``: 'g' (default), 'e', '+', or '-'; the latter
+        two are (|g> +/- |e>)/sqrt(2).
+
+    Returns
+    -------
+    qutip.Qobj
+        Normalized ket of shape (d,1), with components q=2*i+s (s=0:g, 1:e).
+        QuTiP stores flat dimensions; the occupation/TLS split is given by basis.
+
+    Notes
+    -----
+    Packet amplitudes are c_m proportional to
+    exp(-(k_m-k_0)**2/(4*sigma_k**2)) * exp(-i*k_m*x_0), with sum|c_m|**2=1.
+    Every supplied signed mode participates. Subtracting the largest Gaussian
+    exponent prevents common underflow without changing normalized amplitudes.
+    For n>0, the field state is sum_m c_m |n*e_m>; for n=0 it is vacuum once.
+    This n>1 convention differs from (sum_m c_m a_m^dagger)**n |0>/sqrt(n!).
+    For coherent input, each retained tuple receives
+    prod_m (alpha*c_m)**n_m/sqrt(n_m!), followed by whole-ket normalization.
+    The omitted common exp(-|alpha|**2/2) cancels in that projection normalization.
+    """
     k0, sigma = float(param_photon["k_0"]), float(param_photon["sigma_k"])
     x0 = float(param_photon["x_0"])
     if not np.isfinite([k0, sigma, x0]).all() or sigma <= 0:

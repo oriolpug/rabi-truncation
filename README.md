@@ -1,6 +1,6 @@
 # rabi-truncation
 
-Finite multimode Rabi dynamics, photon-space truncation comparisons, and Gaussian-packet scattering. One engine lives in `src/`; callable experiments live in `experiment/` and are controlled by six notebooks in `notebooks/`.
+Finite multimode Rabi dynamics, photon-space truncation comparisons, and Gaussian-packet scattering. One engine lives in `src/`; callable experiments live in `experiment/` and are controlled by five notebooks in `notebooks/`.
 
 The conventions are `hbar = c = 1`, field frequencies `abs(k)`, and
 
@@ -20,7 +20,7 @@ python -m pip install -e '.[dev,notebooks]'
 python -m pytest tests -q
 ```
 
-Open a notebook in `notebooks/` using this Python environment. Its parameter cell defines the physical model; its next cell prints the grid and memory estimate before running. Notebook outputs are deliberately empty in the repository.
+Open a notebook in `notebooks/` using this Python environment. Its parameter cell defines the physical model; the next cell stores and displays grid and memory estimates as pandas DataFrames before running. Diagnostics and fidelity summaries are also stored as DataFrames, with English labels throughout.
 
 ```python
 import numpy as np
@@ -39,7 +39,17 @@ estimate = resource_estimation(param_atom, param_time_evol, cutoffs,
                                n_max=2, CTRL_M_EXPLICIT=CTRL_M_EXPLICIT, M=M)
 experiment = run_scattering(param_photon, param_atom, param_time_evol, cutoffs,
                             n_max=2, CTRL_M_EXPLICIT=CTRL_M_EXPLICIT, M=M)
+
+# Reuse or export tables without parsing console output.
+grid_table = estimate['grid_table']
+resource_table = estimate['resource_table']
+observable_history = experiment.observables_dataframe()
+observable_summary = experiment.observables_dataframe(summary=True)
+# In a notebook: display(grid_table, resource_table, observable_summary)
+# Save if needed: observable_history.to_csv('observables.csv')
 ```
+
+Use `print_report=False` in `resource_estimation` or `estimate_config` to suppress automatic table display. Both DataFrames are still returned alongside the existing numerical estimate keys. A final-only run has a single `final` summary column. Tables retain full numerical precision; `resource_table.attrs['memory_excludes']` documents the costs excluded from the estimate.
 
 ## Momentum control and bases
 
@@ -58,15 +68,15 @@ Gaussian preparation uses `exp(-(k-k_0)**2/(4*sigma_k**2))*exp(-i*k*x_0)` on **a
 
 ## Experiments and fidelity
 
-The notebooks cover TLS evolution, energy profiles and animation, total-cap convergence, a `D` sweep, mode selection, and scattering. Each notebook calls the matching Python module.
+The notebooks cover TLS evolution, total-cap convergence, a `D` sweep, mode selection, and scattering. Each notebook calls the matching Python module. `Experiment.compute_energy()` returns the total Hamiltonian expectation over the stored states for checking energy conservation.
 
 ```sh
 python -m experiment.scattering --D 0.2 --ctrl-m-explicit --M 5
 python -m experiment.sweep_D_fidelity --D-values 0.02,0.1,0.2 --out results/sweep.png
-python experiments_Uri/energy_profile.py --D 0.2 --out results/energy.png --gif results/energy.gif
+python -m experiment.atom_evolution --D 0.2 --out results/atom.png
 ```
 
-The five historical `experiments_Uri/` script paths remain runnable as delegates. Parameters now follow the shared `D`, `L`, `M`, `sigma_k`, `n_max`, `T` conventions and `--option value` CLI. The historical filename `sweep_g_fidelity.py` delegates to `experiment/sweep_D_fidelity.py`.
+Parameters follow the shared `D`, `L`, `M`, `sigma_k`, `n_max`, `T` conventions and `--option value` CLI. All experiments are invoked through the modules in `experiment/`.
 
 Only `F_state` and `F_atom` are calculated. The common `full` space is **implicit**: overlaps align physical momenta and retain every shared Fock configuration, without allocating full-space vectors or projecting/renormalizing onto the intersection. A simulated comparator such as `full+totalcap` is a separate choice. Coherent projections can already disagree at time zero; the notebooks display initial fidelities.
 

@@ -6,11 +6,42 @@ from ._common import config_from_args, finish, parser, run
 
 
 def run_atom_evolution(config, schemes=('full+totalcap', 'truncated'), progress=False):
+    """Propagate one TLS preparation under several photon-space constraints.
+
+    Parameters
+    ----------
+    config : ExperimentConfig
+        Shared physical inputs and photon cap; input is not modified.
+    schemes : iterable[str], optional
+        Basis names; default ('full+totalcap', 'truncated').
+    progress : bool, optional
+        Show solver progress for each trajectory.
+
+    Returns
+    -------
+    dict[str, Experiment]
+        Scheme -> propagated object, forcing store_state=True in each copy.
+        The retained histories support raw P_e(t)=sum_i|C_(i,e)|**2 and
+        S_TLS(t)=-Tr(rho_hat*log(rho_hat)), with rho_hat normalized to trace one.
+    """
     return {scheme: run(replace(config, truncation=scheme, store_state=True), progress)
             for scheme in schemes}
 
 
 def plot_atom_evolution(runs):
+    """Plot raw TLS excitation and normalized entanglement entropy for each basis.
+
+    Parameters
+    ----------
+    runs : dict[str, Experiment]
+        Propagated full-history objects returned by run_atom_evolution.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        Two panels of P_e(t) and S_TLS(t), using natural-log entropy. Builds
+        the figure without showing, exporting or rerunning the trajectories.
+    """
     import matplotlib.pyplot as plt
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     for scheme, experiment in runs.items():
@@ -25,6 +56,20 @@ def plot_atom_evolution(runs):
 
 
 def main(argv=None):
+    """Run per-basis TLS evolution and export excitation curves.
+
+    Parameters
+    ----------
+    argv : list[str] or None, optional
+        CLI arguments without the program name. None reads sys.argv[1:].
+
+    Returns
+    -------
+    None
+        Parses parameters, displays resource tables, simulates and plots.
+        --out saves the figure plus a same-stem NPZ; otherwise displays it.
+        Argument parsing may raise SystemExit for --help or invalid input.
+    """
     p = parser(__doc__)
     p.add_argument('--schemes', default='full+totalcap,truncated')
     args = p.parse_args(argv)

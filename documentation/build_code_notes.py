@@ -60,13 +60,13 @@ BLOCKS = {
         ('def free', r'For each occupation compute $\sum_m|k_m|n_m$, then place it on ground and add $\omega_0$ on excited TLS. The ground-state energy origin is explicit, \eqref{eq:entries}.'),
         ('def interaction', r'Select $f_m=\sqrt{|k_m|}$ or $1$; reject other labels. The signed momentum survives in the spatial phase even though the profile uses $|k|$.'),
         ('u =', r'Compute $u_m=\ii f_m e^{-\ii k_mx_{\mathrm{tls}}}/\sqrt L$, \eqref{eq:H}. $D$ is not multiplied yet, allowing the same interaction matrix to be scaled.'),
-        ('rows, cols', r'Allocate row/column/value lists and a mode tag per transition. Tags support exact interaction-energy attribution in \eqref{eq:energytriplets}.'),
+        ('rows, cols', r'Temporary row/column/value lists hold the sparse interaction entries. A column labels the joint source ket and a row its target; coefficients contain $u_m$ but not $D$.'),
         ('for i, occupation', r'Iterate occupations, TLS labels and changed modes. The matrix column is the source $2i+s$; the target row flips the TLS to $1-s$.'),
         ('if occupation[m]', r'Annihilation requires positive occupation. Under RWA it also requires source TLS $g$. All retained bases are downward closed, so dictionary lookup of the decremented tuple is valid.'),
-        ('values.append(u[m] *', r'Record $u_m\sqrt{n_m}$ and the changed-mode tag. The factor is the bosonic matrix element, with the imposed complex annihilation phase.'),
+        ('values.append(u[m] *', r'Record $u_m\sqrt{n_m}$. The factor is the bosonic matrix element, with the imposed complex annihilation phase.'),
         ('if not self.RWA or atom == 1:', r'Creation is allowed for either TLS without RWA and only source $e$ under RWA. The incremented tuple is tested, not assumed present.'),
         ('if j is not None:', r'Omit targets outside the chosen space, exactly implementing projection. Retained creation receives $u_m^*\sqrt{n_m+1}$, conjugate to its reverse annihilation.'),
-        ('self.transition_rows', r'Keep numerical triplet/tag arrays for diagnostics and convert COO to CSR. Zero-valued triplets can remain recorded, notably for sqrt at $k=0$.'),
+        ('return coo_matrix', r'Convert temporary COO row/column/value records to the CSR interaction matrix. The assembly buffers are not kept as separate diagnostic arrays; zero coefficients can remain as stored sparse entries.'),
         ('def build_hamiltonian', r'Require finite real $D$ and return $H_0+DV$ as a QuTiP operator. Hermiticity follows from paired transitions and real scaling, not solver output normalization.')],
     'src/fidelities.py': [
         ('"""', r'This module implements exactly two squared metrics; ambient full-space vectors and a ratio field proxy are not constructed.'),
@@ -80,40 +80,32 @@ BLOCKS = {
         ('rho_a, rho_b', r'Reduce the individually normalized kets, square QuTiP root fidelity, and return the two metrics clipped for numerical overshoot. Vacuum embedding leaves these atomic reductions unchanged.'),
         ('def fidelities_over_time', r'Require both histories, exactly matching output arrays and equal $L$ to absolute $10^{-12}$. These checks precede pairing, preventing silent comparison of different time samples or boxes.'),
         ('pairs =', r'Compare matching stored states and return two one-dimensional arrays of length $N_t$. The simulated comparator is an independent input, not the ambient embedding choice.')],
-    'src/energy_profile.py': [
-        ('"""', r'Energy partitions consume the already-built Hamiltonian and propagated vector; there is no second interaction implementation.'),
-        ('class EnergyProfile', r'Cache the occupation matrix $n_{i,m}$ and photon-total axis $0,\ldots,\nu_{\max}$. The function $\nu(q)$ and projectors $Q_\nu$ are defined in \eqref{eq:energy-sector-projectors}; full can reach $MN$.'),
-        ('def energy_modes_vec', r'Reshape the raw vector to $C_{i,s}$ of shape $(B,2)$ and form $|C_{i,s}|^2$. Calculations use raw quadratic expectations; see \eqref{eq:energy-raw-normalized} for normalization.'),
-        ('field =', r'The transpose occupation matrix times summed TLS probabilities gives $\langle N_m\rangle=\sum_{i,s}n_{i,m}|C_{i,s}|^2$. Multiply by $\omega_m=|k_m|$ to obtain the bare field term $F_m$ in \eqref{eq:energy-contributions}.'),
-        ('contributions =', r'For each record $\ell$, index source $c_\ell$, target $r_\ell$ and complex value $z_\ell$, then compute $\Re[v_{r_\ell}^*Dz_\ell v_{c_\ell}]$. The record and derivation are \eqref{eq:energy-record-definition}--\eqref{eq:energytriplets}; values contain $u_m$ but not $D$.'),
-        ('interaction =', r'Weighted \code{bincount} by tag $m_\ell$ sums directed terms into $W_m=\langle DV_m\rangle$. Both reverse orientations are already present; do not multiply this accumulated result by two, \eqref{eq:energy-reverse-pair}.'),
-        ('atom =', r'Return $E_m=F_m+W_m$ and the separate bare TLS term $E_a=\omega_0\sum_i|C_{i,1}|^2$. Interaction is assigned to the mode columns by convention, not included in the TLS marker, \eqref{eq:energy-allocation}.'),
-        ('def energy_excitations_vec', r'Use the same experiment and Hamiltonian; the result is indexed by photon total, keeping both atomic components. It is independent of the mode-tag partition.'),
-        ('energy =', r'Form the sparse matrix action and its row terms $\Re[v_q^*(Hv)_q]$, which define \eqref{eq:energy-sector-row-definition}. These terms include cross-sector coherences rather than projecting the Hamiltonian to its diagonal blocks.'),
-        ('return np.bincount', r'First sum the two TLS rows of each photon configuration, then group by total photon number. This gives $E_\nu=\langle(Q_\nu H+H Q_\nu)/2\rangle$, \eqref{eq:energysectors}; it is not conditional energy \eqref{eq:energy-conditional}.')],
     'src/experiment.py': [
         ('"""', r'One common engine imports grid, basis, Hamiltonian and diagnostics. \code{momentum_modes} remains importable from this module for API convenience.'),
         ('def output_times', r'Validate finite positive $T,\code{dt}$. Generate nominal output spacing with a roundoff tolerance, always including zero and exact $T$; if $\code{dt}>T$, return both endpoints.'),
         ('def resource_estimation', r'Build configuration from the dictionary API and call the same grid resolver as propagation. Optional selection requires packet information; dimension is evaluated without enumerating a basis.'),
         ('if truncation ==', r'Use exact dimensions \eqref{eq:dimensions} with the selected count. Reject unknown basis names; no dense allocation is needed to estimate exponential full-space growth.'),
         ('times = output_times', r'Count outputs and estimate $16d$ bytes per ket, retained history depending on storage, two retained vector copies and the sparse-entry bound, \eqref{eq:memory}.'),
-        ('summary =', r'Return base/selected representations and heuristic feasibility. Printed output exposes other-control implications and explicitly names excluded memory costs; it does not enforce a solver allocation limit.'),
+        ('summary =', r'Return base/selected representations and heuristic feasibility, plus reusable grid/resource DataFrames. Display them through the reporting helper when requested. Excluded memory costs remain in frame attributes; no solver allocation limit is enforced.'),
         ('def estimate_config', r'Forward all grid, cap, selection and storage inputs from the dataclass to the dictionary estimator without a separate estimate formula.'),
         ('class Experiment', r'Copy physical dictionaries, resolve base/selected grids, generate output times, build basis and projected Hamiltonian, then prepare the ket. Coefficient arrays are absent until propagation.'),
         ('def propagate_state', r'Run \code{sesolve} with BDF/default tolerances, raw output normalization and final-state storage. Build a contiguous vector array; alternating ground/excited slices are views, shape $(N_t,B)$ or $(B,)$ for final-only.'),
         ('def _one_photon_indices', r'Find tuples with total exactly one, then identify their occupied mode. This works across all three basis orderings and gives an empty list at $N=0$.'),
         ('def compute_observables', r'Require propagation, promote final-only arrays internally, and compute raw norm, TLS excitation, signed $1g$ populations and all photon totals. Sum identities are \eqref{eq:populationchecks}.'),
+        ('def observables_dataframe', r'Return raw observable histories indexed by time or an endpoint table. Final-only storage yields a final column only. Formatting neither rounds stored data nor renormalizes probabilities.'),
         ('def one_photon_wavefunction', r'The first argument is an output index, not a physical time. Extract only $1g$ amplitudes and multiply by positive Fourier phases and $L^{-1/2}$, \eqref{eq:wavefunction}.'),
         ('def _vectors_for', r'Resolve diagnostic requests: all retained states for None, final for $-1$, or nearest stored output for an in-range time. No interpolation occurs; final-only runs reject earlier requests.'),
         ('def compute_atom_density_matrix', r'Reduce each requested raw ket. None returns a list, an explicit time one matrix; final-only with None returns a one-element list.'),
         ('def compute_excited_probability', r'Return the real excited diagonal of the raw TLS reduction. None returns an array, an explicit time a scalar; norm drift remains visible.'),
         ('def compute_entropy', r'Normalize the atomic reduction by the full squared ket norm before natural-log von Neumann entropy. This is \eqref{eq:entropy}, bounded by $\log2$ for normalized valid states.'),
         ('def compute_energy(self', r'Apply the same sparse $H_0+DV$ and take the real raw expectation. Return a time array or scalar without introducing a second energy-origin convention.'),
-        ('def compute_energy_profile_modes', r'For requested kets, return $(k,E_m,0.0,E_a)$ with histories or one profile. The zero is a retained tuple-interface placeholder, not a supplemental atomic mode.'),
-        ('def compute_energy_profile_excitations', r'Return the photon-total axis and row-grouped energy partition. The time selector follows the same rules as other diagnostics; summed energy agrees with direct expectation.')],
+    ],
 }
 
 FUNCTION_NOTES = {
+    'resource_tables': r'Create grid and resource DataFrames from the numerical estimate. Preserve requested controls, effective cutoffs and exact equivalent counts; nullable integer counts distinguish unavailable equivalence. Frame attributes retain integer indices and memory exclusions.',
+    'display_resource_tables': r'Display HTML-capable DataFrames in an active IPython shell, otherwise terminal tables. The input frames remain reusable and unmodified.',
+    'observables_table': r'Convert raw diagnostics to a time-indexed history or observable-by-endpoint frame. Initial/final columns require initial availability; final-only storage produces one final column. Numerical precision and norm drift are preserved.',
     'run': r'Construct one \code{Experiment}, propagate, then compute observables in that order. Return the numerical object so notebook analyses can reuse its kets and Hamiltonian.',
     'save_arrays': r'Create the output directory and write NPZ arrays plus \code{configuration_json} from the base dataclass. Non-JSON values stringify; ordinary numerical arrays can be loaded without pickle.',
     'parser': r'Shared CLI names use $D,L,M,k_0,\sigma_k,x_0,N,T$. Default profile is sqrt. Explicit $M$ requires its boolean flag; default CLI grid control uses cutoffs.',
@@ -127,9 +119,6 @@ FUNCTION_NOTES = {
     'plot_cap_convergence': r'Two metric panels distinguish initial and final fidelities. The horizontal value is the lower cap in each adjacent pair, not necessarily a comparison of $N$ with $N+1$.',
     'run_coupling_sweep': r'Validate a finite nonempty one-dimensional $D$ array and force histories. At each $D$, propagate the chosen comparator and each candidate, reusing it for an identical scheme. Return $(S,Q)$ sample means and initial metrics, \eqref{eq:mean}.',
     'plot_coupling_sweep': r'Plot sample means versus physical $D$ and dashed initial values, separately for both metrics. The unsuffixed result is neither final fidelity nor a time-integral quadrature.',
-    'run_energy_profile': r'Require history, propagate once, and attach mode/TLS, photon-number and total energies to the experiment. Their shapes and sum identities are documented above.',
-    'plot_energy_profile': r'Plot time--momentum and time--photon-total heatmaps plus total/TLS energy. Negative partition values are energies, not invalid probabilities.',
-    'animate_energy_profile': r'Reuse existing arrays for animation and optional GIF output, with stride and frame rate affecting display only. The marker at momentum zero represents separate TLS energy, not another oscillator.',
     'run_mode_selection': r'Use an unselected total-cap comparator at each coupling. Sweep schemes and both selection flags; return $(S,2,Q)$ means/initial metrics. At one fixed $D$, scan windows to return $(S,P,A)$ mean-only heatmaps.',
     'plot_mode_selection': r'Plot selection on/off sweeps and window maps for both metrics. Transpose the stored $(P,A)$ slice for plotting so the horizontal axis remains photon window and vertical axis atom window.',
     'main': r'Parse current CLI inputs, report relevant estimates before simulation, call the module numerical routine, then plot/export. The main guard preserves importability from notebooks.',
@@ -137,13 +126,36 @@ FUNCTION_NOTES = {
 
 
 def generate():
+    """Regenerate English LaTeX source listings and verified line-range comments.
+
+    Parameters
+    ----------
+    None
+        Uses ROOT, ordered BLOCKS markers and FUNCTION_NOTES in this module.
+
+    Returns
+    -------
+    None
+        Writes documentation/code_notes.tex with listings of current sources
+        and commentary tied to their actual line numbers. Missing operation
+        markers raise ValueError; compiling main.tex is a separate step.
+    """
     sections = []
     for filename, blocks in BLOCKS.items():
         lines = (ROOT / filename).read_text().splitlines()
+        tree = ast.parse('\n'.join(lines))
+        doc_lines = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and ast.get_docstring(node) is not None:
+                first = node.body[0]
+                doc_lines.update(range(first.lineno, first.end_lineno + 1))
         matches = []
         for marker, comment in blocks:
             after = matches[-1][0] if matches else 0
-            found = [i + 1 for i, line in enumerate(lines) if i + 1 > after and marker in line]
+            found = [i + 1 for i, line in enumerate(lines)
+                     if i + 1 > after and marker in line
+                     and (i + 1 not in doc_lines or (marker == '"""' and i == 0))]
             if not found:
                 raise ValueError(f'Missing marker {marker!r} in {filename}')
             matches.append((found[0], comment))
@@ -155,7 +167,7 @@ def generate():
             last = matches[index + 1][0] - 1 if index + 1 < len(matches) else len(lines)
             sections.append(f'{first}--{last} & {comment}' + r'\\' + '\n')
         sections.append(r'\bottomrule\end{longtable}' + '\n')
-    for path in sorted((ROOT / 'experiment').glob('*.py')):
+    for path in [ROOT / 'src' / 'reporting.py', *sorted((ROOT / 'experiment').glob('*.py'))]:
         if path.name == '__init__.py':
             continue
         filename = path.relative_to(ROOT).as_posix()

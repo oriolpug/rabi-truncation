@@ -4,188 +4,171 @@
 \begin{longtable}{p{.12\textwidth}p{.79\textwidth}}
 \toprule Lines & Mathematical and implementation commentary\\\midrule\endhead
 1--5 & This module defines configuration data only. Imports do not allocate a grid or launch propagation.\\
-6--7 & The dataclass preserves named inputs and supports \code{dataclasses.replace}; validation occurs in the consuming numerical routines.\\
-8--8 & Packet inputs $k_0,\sigma_k,x_0$, preparation type, and either integer $n$ or complex $\alpha$; see \eqref{eq:packet}--\eqref{eq:coherent}.\\
-9--9 & $\omega_0,D,L,x_{\mathrm{tls}}$, coupling profile, and optional initial TLS label. The box length is stored here but also controls the photon grid.\\
-10--10 & Final time $T$, output spacing \code{dt}, and optional integration method/tolerances. Output spacing does not fix internal solver steps.\\
-11--11 & The radial band is required only under cutoff control. Explicit-count control ignores this dictionary.\\
-12--15 & $N$ and the basis select the retained occupation set, \eqref{eq:bases}. RWA selects Hamiltonian terms; storage selects retained outputs, not a different Hilbert space.\\
-16--17 & True selects exact odd $M$ with zero, \eqref{eq:explicit}; false selects the radial band, \eqref{eq:cutoffs}. No hidden decrement of $M$ occurs.\\
-18--21 & Additional mode windows, applied after resolving the base grid. Their radii are factors times $\sigma_k$, \eqref{eq:selection}.\\
-22--24 & Return a replaced configuration with a new atomic dictionary. Other inputs are reused; the supplied dictionary is not overwritten during a sweep.\\
+6--51 & The dataclass preserves named inputs and supports \code{dataclasses.replace}; validation occurs in the consuming numerical routines.\\
+52--52 & Packet inputs $k_0,\sigma_k,x_0$, preparation type, and either integer $n$ or complex $\alpha$; see \eqref{eq:packet}--\eqref{eq:coherent}.\\
+53--53 & $\omega_0,D,L,x_{\mathrm{tls}}$, coupling profile, and optional initial TLS label. The box length is stored here but also controls the photon grid.\\
+54--54 & Final time $T$, output spacing \code{dt}, and optional integration method/tolerances. Output spacing does not fix internal solver steps.\\
+55--55 & The radial band is required only under cutoff control. Explicit-count control ignores this dictionary.\\
+56--59 & $N$ and the basis select the retained occupation set, \eqref{eq:bases}. RWA selects Hamiltonian terms; storage selects retained outputs, not a different Hilbert space.\\
+60--61 & True selects exact odd $M$ with zero, \eqref{eq:explicit}; false selects the radial band, \eqref{eq:cutoffs}. No hidden decrement of $M$ occurs.\\
+62--65 & Additional mode windows, applied after resolving the base grid. Their radii are factors times $\sigma_k$, \eqref{eq:selection}.\\
+66--81 & Return a replaced configuration with a new atomic dictionary. Other inputs are reused; the supplied dictionary is not overwritten during a sweep.\\
 \bottomrule\end{longtable}
 \paragraph{\code{src/grid.py}}
 \lstinputlisting{../src/grid.py}
 \begin{longtable}{p{.12\textwidth}p{.79\textwidth}}
 \toprule Lines & Mathematical and implementation commentary\\\midrule\endhead
-1--13 & \code{integer} accepts integral types above its minimum, including NumPy integers. It rejects booleans and all floats rather than silently coercing them.\\
-14--15 & One grid generator for both evolution and estimation; its inputs describe the base grid, before any optional windows.\\
-16--20 & Convert and require finite $L>0$. Require an actual boolean control so a truthy string cannot silently select the wrong branch.\\
-21--21 & Compute the physical spacing $\Delta k=2\pi/L$, \eqref{eq:grid}; it is never inferred from a chosen number of modes.\\
-22--28 & Require positive odd integer $M$ and construct indices $-J,\ldots,J$, $J=(M-1)/2$. Even counts raise an error before basis allocation.\\
-29--33 & Cutoff control requires finite ordered radial bounds $0\leq\mathrm{IR}\leq\mathrm{UV}$. These validation steps are skipped when $M$ controls the grid.\\
-34--35 & Ceiling/floor of cutoff ratios with dimensionless $10^{-12}$ boundary tolerances. The positive lower index is subsequently restricted to at least one; compare \eqref{eq:count}.\\
-36--38 & Enumerate positive indices, reflect them in reversed order for the negative side, and add zero only when input IR is exactly zero. A tiny positive IR is not rounded to zero.\\
-39--44 & Multiply integer indices by $\Delta k$ and reject an empty band. Sorted signed momenta, not frequencies, are returned.\\
-45--51 & Validate positive finite $\sigma_k$ and nonnegative finite factors. This is a requested subset operation; it is not a right-moving preparation filter.\\
-52--54 & Window centres $k_0,+\omega_0,-\omega_0$ with radii $w_p\sigma_k,w_a\sigma_k$, as in \eqref{eq:selection}.\\
-55--63 & For each window use an absolute momentum tolerance, add the nearest mode if empty, and union its mask. Ties use the first sorted entry. The returned mask preserves base-grid ordering.\\
-64--72 & Resolve the same base grid for estimator and engine. With selection return its indexed subset; otherwise return a distinct array copy with the same values.\\
-73--77 & Recover integer indices from the physical spacing and compute radial extrema. This representation report is independent of the photon cap and basis type.\\
-78--80 & Test equality with the entire symmetric radial band, \eqref{eq:radialexact}; minima/maxima alone would miss holes or unpaired endpoints. Compute the smallest nonzero $|k|$ separately.\\
-81--88 & Report count, signed extrema, effective cutoffs, zero, integer indices and exact representability. An equivalent explicit $M$ exists only for a radial-exact set containing zero.\\
-89--89 & Return separate base and selected descriptions with their common physical spacing. A selected count may differ from the explicit base-grid input.\\
+1--34 & \code{integer} accepts integral types above its minimum, including NumPy integers. It rejects booleans and all floats rather than silently coercing them.\\
+35--62 & One grid generator for both evolution and estimation; its inputs describe the base grid, before any optional windows.\\
+63--67 & Convert and require finite $L>0$. Require an actual boolean control so a truthy string cannot silently select the wrong branch.\\
+68--68 & Compute the physical spacing $\Delta k=2\pi/L$, \eqref{eq:grid}; it is never inferred from a chosen number of modes.\\
+69--75 & Require positive odd integer $M$ and construct indices $-J,\ldots,J$, $J=(M-1)/2$. Even counts raise an error before basis allocation.\\
+76--80 & Cutoff control requires finite ordered radial bounds $0\leq\mathrm{IR}\leq\mathrm{UV}$. These validation steps are skipped when $M$ controls the grid.\\
+81--82 & Ceiling/floor of cutoff ratios with dimensionless $10^{-12}$ boundary tolerances. The positive lower index is subsequently restricted to at least one; compare \eqref{eq:count}.\\
+83--85 & Enumerate positive indices, reflect them in reversed order for the negative side, and add zero only when input IR is exactly zero. A tiny positive IR is not rounded to zero.\\
+86--91 & Multiply integer indices by $\Delta k$ and reject an empty band. Sorted signed momenta, not frequencies, are returned.\\
+92--121 & Validate positive finite $\sigma_k$ and nonnegative finite factors. This is a requested subset operation; it is not a right-moving preparation filter.\\
+122--124 & Window centres $k_0,+\omega_0,-\omega_0$ with radii $w_p\sigma_k,w_a\sigma_k$, as in \eqref{eq:selection}.\\
+125--133 & For each window use an absolute momentum tolerance, add the nearest mode if empty, and union its mask. Ties use the first sorted entry. The returned mask preserves base-grid ordering.\\
+134--156 & Resolve the same base grid for estimator and engine. With selection return its indexed subset; otherwise return a distinct array copy with the same values.\\
+157--193 & Recover integer indices from the physical spacing and compute radial extrema. This representation report is independent of the photon cap and basis type.\\
+194--196 & Test equality with the entire symmetric radial band, \eqref{eq:radialexact}; minima/maxima alone would miss holes or unpaired endpoints. Compute the smallest nonzero $|k|$ separately.\\
+197--204 & Report count, signed extrema, effective cutoffs, zero, integer indices and exact representability. An equivalent explicit $M$ exists only for a radial-exact set containing zero.\\
+205--205 & Return separate base and selected descriptions with their common physical spacing. A selected count may differ from the explicit base-grid input.\\
 \bottomrule\end{longtable}
 \paragraph{\code{src/states.py}}
 \lstinputlisting{../src/states.py}
 \begin{longtable}{p{.12\textwidth}p{.79\textwidth}}
 \toprule Lines & Mathematical and implementation commentary\\\midrule\endhead
 1--11 & Combinations with replacement enumerate total-cap occupations; a Cartesian product enumerates full. These algorithms avoid testing every candidate product against a total cap.\\
-12--16 & Validate at least one retained mode and nonnegative integer cap. Store the representation name; $N=0$ is a valid vacuum-only photon space.\\
-17--17 & One zero tuple of length $M$ represents the photon vacuum. TLS components are attached later through the alternating index rule \eqref{eq:index}.\\
-18--24 & Append $n\bm e_m$ in mode-first, occupation-second order after vacuum. Multimode configurations are absent at every cap; dimension $2(1+MN)$.\\
-25--29 & For each total from zero to $N$, enumerate multisets of occupied mode indices. \code{bincount} produces the tuple without duplicates; dimension $2\binom{M+N}{N}$.\\
-30--33 & Cartesian product of $0,\ldots,N$ on each mode. The final occupation changes fastest. Unknown names, including the removed extra-oscillator scheme, raise an error.\\
-34--39 & Store the exact tuples, their dictionary indices and photon totals. Ket dimension is twice the configuration count because the TLS remains a separate binary factor.\\
-40--46 & Read finite signed $k_0$, finite $x_0$ and positive finite $\sigma_k$. All values in the supplied selected momentum array enter preparation.\\
-47--49 & Gaussian amplitude and phase from \eqref{eq:packet}. Subtract the largest real exponent, then normalize the whole packet; the common stabilizing factor cancels.\\
-50--55 & Define the normalized $g,e,+,-$ vectors in TLS order $(g,e)$ and reject unknown initial labels. Ground is the default.\\
-56--58 & Allocate the joint complex ket and select number or coherent preparation. The default is number, with $n=1$ below.\\
-59--66 & Require integer $0\leq n\leq N$. For $n=0$ write the TLS vector onto vacuum exactly once, independent of how many modes exist.\\
-67--71 & For $n>0$, place $c_m\ket{a_0}$ at occupation $n\bm e_m$ in alternating components. This is \eqref{eq:number}, not the collective-mode Fock state \eqref{eq:collective}.\\
-72--75 & Read and validate complex $\alpha$. The algorithm projects a product of coherent states, not a single coherent state restricted to one ray.\\
-76--82 & Multiply $(\alpha c_m)^{n_m}/\sqrt{n_m!}$ over all modes for each allowed tuple, then multiply both TLS components. The common coherent exponential is omitted because it cancels in \eqref{eq:coherent}.\\
-83--86 & Normalize the complete projected ket once, rejecting zero or nonfinite norm. The retained coherent mass and its basis dependence are derived in \eqref{eq:weights}; no intersection normalization is involved.\\
+12--53 & Validate at least one retained mode and nonnegative integer cap. Store the representation name; $N=0$ is a valid vacuum-only photon space.\\
+54--54 & One zero tuple of length $M$ represents the photon vacuum. TLS components are attached later through the alternating index rule \eqref{eq:index}.\\
+55--61 & Append $n\bm e_m$ in mode-first, occupation-second order after vacuum. Multimode configurations are absent at every cap; dimension $2(1+MN)$.\\
+62--66 & For each total from zero to $N$, enumerate multisets of occupied mode indices. \code{bincount} produces the tuple without duplicates; dimension $2\binom{M+N}{N}$.\\
+67--70 & Cartesian product of $0,\ldots,N$ on each mode. The final occupation changes fastest. Unknown names, including the removed extra-oscillator scheme, raise an error.\\
+71--76 & Store the exact tuples, their dictionary indices and photon totals. Ket dimension is twice the configuration count because the TLS remains a separate binary factor.\\
+77--116 & Read finite signed $k_0$, finite $x_0$ and positive finite $\sigma_k$. All values in the supplied selected momentum array enter preparation.\\
+117--119 & Gaussian amplitude and phase from \eqref{eq:packet}. Subtract the largest real exponent, then normalize the whole packet; the common stabilizing factor cancels.\\
+120--125 & Define the normalized $g,e,+,-$ vectors in TLS order $(g,e)$ and reject unknown initial labels. Ground is the default.\\
+126--128 & Allocate the joint complex ket and select number or coherent preparation. The default is number, with $n=1$ below.\\
+129--136 & Require integer $0\leq n\leq N$. For $n=0$ write the TLS vector onto vacuum exactly once, independent of how many modes exist.\\
+137--141 & For $n>0$, place $c_m\ket{a_0}$ at occupation $n\bm e_m$ in alternating components. This is \eqref{eq:number}, not the collective-mode Fock state \eqref{eq:collective}.\\
+142--145 & Read and validate complex $\alpha$. The algorithm projects a product of coherent states, not a single coherent state restricted to one ray.\\
+146--152 & Multiply $(\alpha c_m)^{n_m}/\sqrt{n_m!}$ over all modes for each allowed tuple, then multiply both TLS components. The common coherent exponential is omitted because it cancels in \eqref{eq:coherent}.\\
+153--156 & Normalize the complete projected ket once, rejecting zero or nonfinite norm. The retained coherent mass and its basis dependence are derived in \eqref{eq:weights}; no intersection normalization is involved.\\
 \bottomrule\end{longtable}
 \paragraph{\code{src/hamiltonians.py}}
 \lstinputlisting{../src/hamiltonians.py}
 \begin{longtable}{p{.12\textwidth}p{.79\textwidth}}
 \toprule Lines & Mathematical and implementation commentary\\\midrule\endhead
 1--7 & Use COO triplets and CSR storage rather than a dense $d\times d$ allocation. QuTiP wraps the final sparse operator for evolution.\\
-8--19 & Store basis and physical parameters; require finite $L>0$, $\omega_0\geq0$ and finite TLS position. Build the free term and interaction separately.\\
-20--27 & For each occupation compute $\sum_m|k_m|n_m$, then place it on ground and add $\omega_0$ on excited TLS. The ground-state energy origin is explicit, \eqref{eq:entries}.\\
-28--35 & Select $f_m=\sqrt{|k_m|}$ or $1$; reject other labels. The signed momentum survives in the spatial phase even though the profile uses $|k|$.\\
-36--37 & Compute $u_m=\ii f_m e^{-\ii k_mx_{\mathrm{tls}}}/\sqrt L$, \eqref{eq:H}. $D$ is not multiplied yet, allowing the same interaction matrix to be scaled.\\
-38--38 & Allocate row/column/value lists and a mode tag per transition. Tags support exact interaction-energy attribution in \eqref{eq:energytriplets}.\\
-39--42 & Iterate occupations, TLS labels and changed modes. The matrix column is the source $2i+s$; the target row flips the TLS to $1-s$.\\
-43--48 & Annihilation requires positive occupation. Under RWA it also requires source TLS $g$. All retained bases are downward closed, so dictionary lookup of the decremented tuple is valid.\\
-49--50 & Record $u_m\sqrt{n_m}$ and the changed-mode tag. The factor is the bosonic matrix element, with the imposed complex annihilation phase.\\
-51--54 & Creation is allowed for either TLS without RWA and only source $e$ under RWA. The incremented tuple is tested, not assumed present.\\
-55--59 & Omit targets outside the chosen space, exactly implementing projection. Retained creation receives $u_m^*\sqrt{n_m+1}$, conjugate to its reverse annihilation.\\
-60--65 & Keep numerical triplet/tag arrays for diagnostics and convert COO to CSR. Zero-valued triplets can remain recorded, notably for sqrt at $k=0$.\\
-66--70 & Require finite real $D$ and return $H_0+DV$ as a QuTiP operator. Hermiticity follows from paired transitions and real scaling, not solver output normalization.\\
+8--56 & Store basis and physical parameters; require finite $L>0$, $\omega_0\geq0$ and finite TLS position. Build the free term and interaction separately.\\
+57--78 & For each occupation compute $\sum_m|k_m|n_m$, then place it on ground and add $\omega_0$ on excited TLS. The ground-state energy origin is explicit, \eqref{eq:entries}.\\
+79--109 & Select $f_m=\sqrt{|k_m|}$ or $1$; reject other labels. The signed momentum survives in the spatial phase even though the profile uses $|k|$.\\
+110--111 & Compute $u_m=\ii f_m e^{-\ii k_mx_{\mathrm{tls}}}/\sqrt L$, \eqref{eq:H}. $D$ is not multiplied yet, allowing the same interaction matrix to be scaled.\\
+112--112 & Temporary row/column/value lists hold the sparse interaction entries. A column labels the joint source ket and a row its target; coefficients contain $u_m$ but not $D$.\\
+113--116 & Iterate occupations, TLS labels and changed modes. The matrix column is the source $2i+s$; the target row flips the TLS to $1-s$.\\
+117--122 & Annihilation requires positive occupation. Under RWA it also requires source TLS $g$. All retained bases are downward closed, so dictionary lookup of the decremented tuple is valid.\\
+123--123 & Record $u_m\sqrt{n_m}$. The factor is the bosonic matrix element, with the imposed complex annihilation phase.\\
+124--127 & Creation is allowed for either TLS without RWA and only source $e$ under RWA. The incremented tuple is tested, not assumed present.\\
+128--131 & Omit targets outside the chosen space, exactly implementing projection. Retained creation receives $u_m^*\sqrt{n_m+1}$, conjugate to its reverse annihilation.\\
+132--133 & Convert temporary COO row/column/value records to the CSR interaction matrix. The assembly buffers are not kept as separate diagnostic arrays; zero coefficients can remain as stored sparse entries.\\
+134--153 & Require finite real $D$ and return $H_0+DV$ as a QuTiP operator. Hermiticity follows from paired transitions and real scaling, not solver output normalization.\\
 \bottomrule\end{longtable}
 \paragraph{\code{src/fidelities.py}}
 \lstinputlisting{../src/fidelities.py}
 \begin{longtable}{p{.12\textwidth}p{.79\textwidth}}
 \toprule Lines & Mathematical and implementation commentary\\\midrule\endhead
 1--6 & This module implements exactly two squared metrics; ambient full-space vectors and a ratio field proxy are not constructed.\\
-7--16 & Accept a QuTiP ket or one-dimensional array of the basis dimension. Normalize the entire nonzero finite ket for metric evaluation, retaining raw norm diagnostics elsewhere.\\
-17--21 & Reshape alternating components to $C$ with shape $(B,2)$, then compute $C^{\mathsf T}C^*$ as in \eqref{eq:rho}. For a raw ket its trace is the squared norm.\\
-22--26 & Start the union with the first physical momentum list and its identity map. Internal union order need not be sorted because occupation keys are canonicalized.\\
-27--38 & Match each second-grid mode with absolute tolerance $10^{-12}$ and zero relative tolerance. Reuse its union index, append if absent, or reject an ambiguous match.\\
-39--46 & For each tuple, discard zero occupations and sort positive $(\text{union index},n)$ pairs. Store the two TLS amplitudes; missing modes are vacuum implicitly and vacuum has an empty key.\\
-47--52 & Normalize both kets, align physical modes, and build occupation dictionaries. This low-level API cannot check box length or Hamiltonian conventions, which remain caller responsibilities.\\
-53--54 & Sum the conjugate first-state times second-state TLS dot product over every shared physical key, \eqref{eq:fstate}. Do not normalize on that intersection; example \eqref{eq:intersectionexample} would otherwise be wrong.\\
-55--59 & Reduce the individually normalized kets, square QuTiP root fidelity, and return the two metrics clipped for numerical overshoot. Vacuum embedding leaves these atomic reductions unchanged.\\
-60--67 & Require both histories, exactly matching output arrays and equal $L$ to absolute $10^{-12}$. These checks precede pairing, preventing silent comparison of different time samples or boxes.\\
-68--72 & Compare matching stored states and return two one-dimensional arrays of length $N_t$. The simulated comparator is an independent input, not the ambient embedding choice.\\
-\bottomrule\end{longtable}
-\paragraph{\code{src/energy_profile.py}}
-\lstinputlisting{../src/energy_profile.py}
-\begin{longtable}{p{.12\textwidth}p{.79\textwidth}}
-\toprule Lines & Mathematical and implementation commentary\\\midrule\endhead
-1--5 & Energy partitions consume the already-built Hamiltonian and propagated vector; there is no second interaction implementation.\\
-6--11 & Cache the occupation matrix $n_{i,m}$ and photon-total axis $0,\ldots,\nu_{\max}$. The function $\nu(q)$ and projectors $Q_\nu$ are defined in \eqref{eq:energy-sector-projectors}; full can reach $MN$.\\
-12--14 & Reshape the raw vector to $C_{i,s}$ of shape $(B,2)$ and form $|C_{i,s}|^2$. Calculations use raw quadratic expectations; see \eqref{eq:energy-raw-normalized} for normalization.\\
-15--16 & The transpose occupation matrix times summed TLS probabilities gives $\langle N_m\rangle=\sum_{i,s}n_{i,m}|C_{i,s}|^2$. Multiply by $\omega_m=|k_m|$ to obtain the bare field term $F_m$ in \eqref{eq:energy-contributions}.\\
-17--19 & For each record $\ell$, index source $c_\ell$, target $r_\ell$ and complex value $z_\ell$, then compute $\Re[v_{r_\ell}^*Dz_\ell v_{c_\ell}]$. The record and derivation are \eqref{eq:energy-record-definition}--\eqref{eq:energytriplets}; values contain $u_m$ but not $D$.\\
-20--21 & Weighted \code{bincount} by tag $m_\ell$ sums directed terms into $W_m=\langle DV_m\rangle$. Both reverse orientations are already present; do not multiply this accumulated result by two, \eqref{eq:energy-reverse-pair}.\\
-22--24 & Return $E_m=F_m+W_m$ and the separate bare TLS term $E_a=\omega_0\sum_i|C_{i,1}|^2$. Interaction is assigned to the mode columns by convention, not included in the TLS marker, \eqref{eq:energy-allocation}.\\
-25--26 & Use the same experiment and Hamiltonian; the result is indexed by photon total, keeping both atomic components. It is independent of the mode-tag partition.\\
-27--28 & Form the sparse matrix action and its row terms $\Re[v_q^*(Hv)_q]$, which define \eqref{eq:energy-sector-row-definition}. These terms include cross-sector coherences rather than projecting the Hamiltonian to its diagonal blocks.\\
-29--30 & First sum the two TLS rows of each photon configuration, then group by total photon number. This gives $E_\nu=\langle(Q_\nu H+H Q_\nu)/2\rangle$, \eqref{eq:energysectors}; it is not conditional energy \eqref{eq:energy-conditional}.\\
+7--32 & Accept a QuTiP ket or one-dimensional array of the basis dimension. Normalize the entire nonzero finite ket for metric evaluation, retaining raw norm diagnostics elsewhere.\\
+33--52 & Reshape alternating components to $C$ with shape $(B,2)$, then compute $C^{\mathsf T}C^*$ as in \eqref{eq:rho}. For a raw ket its trace is the squared norm.\\
+53--72 & Start the union with the first physical momentum list and its identity map. Internal union order need not be sorted because occupation keys are canonicalized.\\
+73--84 & Match each second-grid mode with absolute tolerance $10^{-12}$ and zero relative tolerance. Reuse its union index, append if absent, or reject an ambiguous match.\\
+85--111 & For each tuple, discard zero occupations and sort positive $(\text{union index},n)$ pairs. Store the two TLS amplitudes; missing modes are vacuum implicitly and vacuum has an empty key.\\
+112--143 & Normalize both kets, align physical modes, and build occupation dictionaries. This low-level API cannot check box length or Hamiltonian conventions, which remain caller responsibilities.\\
+144--145 & Sum the conjugate first-state times second-state TLS dot product over every shared physical key, \eqref{eq:fstate}. Do not normalize on that intersection; example \eqref{eq:intersectionexample} would otherwise be wrong.\\
+146--150 & Reduce the individually normalized kets, square QuTiP root fidelity, and return the two metrics clipped for numerical overshoot. Vacuum embedding leaves these atomic reductions unchanged.\\
+151--178 & Require both histories, exactly matching output arrays and equal $L$ to absolute $10^{-12}$. These checks precede pairing, preventing silent comparison of different time samples or boxes.\\
+179--183 & Compare matching stored states and return two one-dimensional arrays of length $N_t$. The simulated comparator is an independent input, not the ambient embedding choice.\\
 \bottomrule\end{longtable}
 \paragraph{\code{src/experiment.py}}
 \lstinputlisting{../src/experiment.py}
 \begin{longtable}{p{.12\textwidth}p{.79\textwidth}}
 \toprule Lines & Mathematical and implementation commentary\\\midrule\endhead
 1--15 & One common engine imports grid, basis, Hamiltonian and diagnostics. \code{momentum_modes} remains importable from this module for API convenience.\\
-16--30 & Validate finite positive $T,\code{dt}$. Generate nominal output spacing with a roundoff tolerance, always including zero and exact $T$; if $\code{dt}>T$, return both endpoints.\\
-31--42 & Build configuration from the dictionary API and call the same grid resolver as propagation. Optional selection requires packet information; dimension is evaluated without enumerating a basis.\\
-43--50 & Use exact dimensions \eqref{eq:dimensions} with the selected count. Reject unknown basis names; no dense allocation is needed to estimate exponential full-space growth.\\
-51--55 & Count outputs and estimate $16d$ bytes per ket, retained history depending on storage, two retained vector copies and the sparse-entry bound, \eqref{eq:memory}.\\
-56--79 & Return base/selected representations and heuristic feasibility. Printed output exposes other-control implications and explicitly names excluded memory costs; it does not enforce a solver allocation limit.\\
-80--87 & Forward all grid, cap, selection and storage inputs from the dataclass to the dictionary estimator without a separate estimate formula.\\
-88--104 & Copy physical dictionaries, resolve base/selected grids, generate output times, build basis and projected Hamiltonian, then prepare the ket. Coefficient arrays are absent until propagation.\\
-105--116 & Run \code{sesolve} with BDF/default tolerances, raw output normalization and final-state storage. Build a contiguous vector array; alternating ground/excited slices are views, shape $(N_t,B)$ or $(B,)$ for final-only.\\
-117--121 & Find tuples with total exactly one, then identify their occupied mode. This works across all three basis orderings and gives an empty list at $N=0$.\\
-122--138 & Require propagation, promote final-only arrays internally, and compute raw norm, TLS excitation, signed $1g$ populations and all photon totals. Sum identities are \eqref{eq:populationchecks}.\\
-139--146 & The first argument is an output index, not a physical time. Extract only $1g$ amplitudes and multiply by positive Fourier phases and $L^{-1/2}$, \eqref{eq:wavefunction}.\\
-147--160 & Resolve diagnostic requests: all retained states for None, final for $-1$, or nearest stored output for an in-range time. No interpolation occurs; final-only runs reject earlier requests.\\
-161--164 & Reduce each requested raw ket. None returns a list, an explicit time one matrix; final-only with None returns a one-element list.\\
-165--168 & Return the real excited diagonal of the raw TLS reduction. None returns an array, an explicit time a scalar; norm drift remains visible.\\
-169--173 & Normalize the atomic reduction by the full squared ket norm before natural-log von Neumann entropy. This is \eqref{eq:entropy}, bounded by $\log2$ for normalized valid states.\\
-174--178 & Apply the same sparse $H_0+DV$ and take the real raw expectation. Return a time array or scalar without introducing a second energy-origin convention.\\
-179--184 & For requested kets, return $(k,E_m,0.0,E_a)$ with histories or one profile. The zero is a retained tuple-interface placeholder, not a supplemental atomic mode.\\
-185--188 & Return the photon-total axis and row-grouped energy partition. The time selector follows the same rules as other diagnostics; summed energy agrees with direct expectation.\\
+16--45 & Validate finite positive $T,\code{dt}$. Generate nominal output spacing with a roundoff tolerance, always including zero and exact $T$; if $\code{dt}>T$, return both endpoints.\\
+46--104 & Build configuration from the dictionary API and call the same grid resolver as propagation. Optional selection requires packet information; dimension is evaluated without enumerating a basis.\\
+105--112 & Use exact dimensions \eqref{eq:dimensions} with the selected count. Reject unknown basis names; no dense allocation is needed to estimate exponential full-space growth.\\
+113--117 & Count outputs and estimate $16d$ bytes per ket, retained history depending on storage, two retained vector copies and the sparse-entry bound, \eqref{eq:memory}.\\
+118--129 & Return base/selected representations and heuristic feasibility, plus reusable grid/resource DataFrames. Display them through the reporting helper when requested. Excluded memory costs remain in frame attributes; no solver allocation limit is enforced.\\
+130--152 & Forward all grid, cap, selection and storage inputs from the dataclass to the dictionary estimator without a separate estimate formula.\\
+153--209 & Copy physical dictionaries, resolve base/selected grids, generate output times, build basis and projected Hamiltonian, then prepare the ket. Coefficient arrays are absent until propagation.\\
+210--242 & Run \code{sesolve} with BDF/default tolerances, raw output normalization and final-state storage. Build a contiguous vector array; alternating ground/excited slices are views, shape $(N_t,B)$ or $(B,)$ for final-only.\\
+243--261 & Find tuples with total exactly one, then identify their occupied mode. This works across all three basis orderings and gives an empty list at $N=0$.\\
+262--301 & Require propagation, promote final-only arrays internally, and compute raw norm, TLS excitation, signed $1g$ populations and all photon totals. Sum identities are \eqref{eq:populationchecks}.\\
+302--326 & Return raw observable histories indexed by time or an endpoint table. Final-only storage yields a final column only. Formatting neither rounds stored data nor renormalizes probabilities.\\
+327--352 & The first argument is an output index, not a physical time. Extract only $1g$ amplitudes and multiply by positive Fourier phases and $L^{-1/2}$, \eqref{eq:wavefunction}.\\
+353--382 & Resolve diagnostic requests: all retained states for None, final for $-1$, or nearest stored output for an in-range time. No interpolation occurs; final-only runs reject earlier requests.\\
+383--402 & Reduce each requested raw ket. None returns a list, an explicit time one matrix; final-only with None returns a one-element list.\\
+403--420 & Return the real excited diagonal of the raw TLS reduction. None returns an array, an explicit time a scalar; norm drift remains visible.\\
+421--441 & Normalize the atomic reduction by the full squared ket norm before natural-log von Neumann entropy. This is \eqref{eq:entropy}, bounded by $\log2$ for normalized valid states.\\
+442--461 & Apply the same sparse $H_0+DV$ and take the real raw expectation. Return a time array or scalar without introducing a second energy-origin convention.\\
+\bottomrule\end{longtable}
+\paragraph{\code{src/reporting.py}}
+\lstinputlisting{../src/reporting.py}
+\begin{longtable}{p{.12\textwidth}p{.79\textwidth}}
+\toprule Lines & Mathematical and implementation commentary\\\midrule\endhead
+6--58 & \code{resource_tables}: Create grid and resource DataFrames from the numerical estimate. Preserve requested controls, effective cutoffs and exact equivalent counts; nullable integer counts distinguish unavailable equivalence. Frame attributes retain integer indices and memory exclusions.\\
+61--86 & \code{display_resource_tables}: Display HTML-capable DataFrames in an active IPython shell, otherwise terminal tables. The input frames remain reusable and unmodified.\\
+89--120 & \code{observables_table}: Convert raw diagnostics to a time-indexed history or observable-by-endpoint frame. Initial/final columns require initial availability; final-only storage produces one final column. Numerical precision and norm drift are preserved.\\
 \bottomrule\end{longtable}
 \paragraph{\code{experiment/_common.py}}
 \lstinputlisting{../experiment/_common.py}
 \begin{longtable}{p{.12\textwidth}p{.79\textwidth}}
 \toprule Lines & Mathematical and implementation commentary\\\midrule\endhead
-14--18 & \code{run}: Construct one \code{Experiment}, propagate, then compute observables in that order. Return the numerical object so notebook analyses can reuse its kets and Hamiltonian.\\
-21--25 & \code{save_arrays}: Create the output directory and write NPZ arrays plus \code{configuration_json} from the base dataclass. Non-JSON values stringify; ordinary numerical arrays can be loaded without pickle.\\
-28--53 & \code{parser}: Shared CLI names use $D,L,M,k_0,\sigma_k,x_0,N,T$. Default profile is sqrt. Explicit $M$ requires its boolean flag; default CLI grid control uses cutoffs.\\
-56--65 & \code{config_from_args}: Construct the three dictionaries and dataclass with the current conventions. Both count and cutoff inputs may be stored, but only the selected control is active; historical values are not automatically converted.\\
-68--77 & \code{finish}: With an output path, save the figure and same-stem NPZ, then close it. Otherwise display the figure. Backend selection remains the environment or notebook responsibility.\\
+14--33 & \code{run}: Construct one \code{Experiment}, propagate, then compute observables in that order. Return the numerical object so notebook analyses can reuse its kets and Hamiltonian.\\
+36--57 & \code{save_arrays}: Create the output directory and write NPZ arrays plus \code{configuration_json} from the base dataclass. Non-JSON values stringify; ordinary numerical arrays can be loaded without pickle.\\
+60--100 & \code{parser}: Shared CLI names use $D,L,M,k_0,\sigma_k,x_0,N,T$. Default profile is sqrt. Explicit $M$ requires its boolean flag; default CLI grid control uses cutoffs.\\
+103--127 & \code{config_from_args}: Construct the three dictionaries and dataclass with the current conventions. Both count and cutoff inputs may be stored, but only the selected control is active; historical values are not automatically converted.\\
+130--158 & \code{finish}: With an output path, save the figure and same-stem NPZ, then close it. Otherwise display the figure. Backend selection remains the environment or notebook responsibility.\\
 \bottomrule\end{longtable}
 \paragraph{\code{experiment/atom_evolution.py}}
 \lstinputlisting{../experiment/atom_evolution.py}
 \begin{longtable}{p{.12\textwidth}p{.79\textwidth}}
 \toprule Lines & Mathematical and implementation commentary\\\midrule\endhead
-8--10 & \code{run_atom_evolution}: Replace the configuration by each scheme and force history storage. Return a dictionary of experiments, so excitation, entropy and notebook fidelity derive from the same stored trajectories.\\
-13--24 & \code{plot_atom_evolution}: Plot raw $P_e$ and normalized TLS entropy against output times for every returned scheme. This plot does not itself propagate or compute cross-state fidelity.\\
-27--37 & \code{main}: Parse current CLI inputs, report relevant estimates before simulation, call the module numerical routine, then plot/export. The main guard preserves importability from notebooks.\\
+8--28 & \code{run_atom_evolution}: Replace the configuration by each scheme and force history storage. Return a dictionary of experiments, so excitation, entropy and notebook fidelity derive from the same stored trajectories.\\
+31--55 & \code{plot_atom_evolution}: Plot raw $P_e$ and normalized TLS entropy against output times for every returned scheme. This plot does not itself propagate or compute cross-state fidelity.\\
+58--82 & \code{main}: Parse current CLI inputs, report relevant estimates before simulation, call the module numerical routine, then plot/export. The main guard preserves importability from notebooks.\\
 \bottomrule\end{longtable}
 \paragraph{\code{experiment/compare_mode_selection.py}}
 \lstinputlisting{../experiment/compare_mode_selection.py}
 \begin{longtable}{p{.12\textwidth}p{.79\textwidth}}
 \toprule Lines & Mathematical and implementation commentary\\\midrule\endhead
-11--44 & \code{run_mode_selection}: Use an unselected total-cap comparator at each coupling. Sweep schemes and both selection flags; return $(S,2,Q)$ means/initial metrics. At one fixed $D$, scan windows to return $(S,P,A)$ mean-only heatmaps.\\
-47--67 & \code{plot_mode_selection}: Plot selection on/off sweeps and window maps for both metrics. Transpose the stored $(P,A)$ slice for plotting so the horizontal axis remains photon window and vertical axis atom window.\\
-70--83 & \code{main}: Parse current CLI inputs, report relevant estimates before simulation, call the module numerical routine, then plot/export. The main guard preserves importability from notebooks.\\
-\bottomrule\end{longtable}
-\paragraph{\code{experiment/energy_profile.py}}
-\lstinputlisting{../experiment/energy_profile.py}
-\begin{longtable}{p{.12\textwidth}p{.79\textwidth}}
-\toprule Lines & Mathematical and implementation commentary\\\midrule\endhead
-8--17 & \code{run_energy_profile}: Require history, propagate once, and attach mode/TLS, photon-number and total energies to the experiment. Their shapes and sum identities are documented above.\\
-20--34 & \code{plot_energy_profile}: Plot time--momentum and time--photon-total heatmaps plus total/TLS energy. Negative partition values are energies, not invalid probabilities.\\
-37--68 & \code{animate_energy_profile}: Reuse existing arrays for animation and optional GIF output, with stride and frame rate affecting display only. The marker at momentum zero represents separate TLS energy, not another oscillator.\\
-71--81 & \code{main}: Parse current CLI inputs, report relevant estimates before simulation, call the module numerical routine, then plot/export. The main guard preserves importability from notebooks.\\
+11--75 & \code{run_mode_selection}: Use an unselected total-cap comparator at each coupling. Sweep schemes and both selection flags; return $(S,2,Q)$ means/initial metrics. At one fixed $D$, scan windows to return $(S,P,A)$ mean-only heatmaps.\\
+78--112 & \code{plot_mode_selection}: Plot selection on/off sweeps and window maps for both metrics. Transpose the stored $(P,A)$ slice for plotting so the horizontal axis remains photon window and vertical axis atom window.\\
+115--142 & \code{main}: Parse current CLI inputs, report relevant estimates before simulation, call the module numerical routine, then plot/export. The main guard preserves importability from notebooks.\\
 \bottomrule\end{longtable}
 \paragraph{\code{experiment/full_cumulative_fidelity.py}}
 \lstinputlisting{../experiment/full_cumulative_fidelity.py}
 \begin{longtable}{p{.12\textwidth}p{.79\textwidth}}
 \toprule Lines & Mathematical and implementation commentary\\\midrule\endhead
-11--25 & \code{run_cap_convergence}: Require at least two strictly increasing caps; run total-cap final-only trajectories at each. Compare adjacent list entries initially and finally using physical embedding; retain all run objects.\\
-28--37 & \code{plot_cap_convergence}: Two metric panels distinguish initial and final fidelities. The horizontal value is the lower cap in each adjacent pair, not necessarily a comparison of $N$ with $N+1$.\\
-40--51 & \code{main}: Parse current CLI inputs, report relevant estimates before simulation, call the module numerical routine, then plot/export. The main guard preserves importability from notebooks.\\
+11--48 & \code{run_cap_convergence}: Require at least two strictly increasing caps; run total-cap final-only trajectories at each. Compare adjacent list entries initially and finally using physical embedding; retain all run objects.\\
+51--74 & \code{plot_cap_convergence}: Two metric panels distinguish initial and final fidelities. The horizontal value is the lower cap in each adjacent pair, not necessarily a comparison of $N$ with $N+1$.\\
+77--102 & \code{main}: Parse current CLI inputs, report relevant estimates before simulation, call the module numerical routine, then plot/export. The main guard preserves importability from notebooks.\\
 \bottomrule\end{longtable}
 \paragraph{\code{experiment/scattering.py}}
 \lstinputlisting{../experiment/scattering.py}
 \begin{longtable}{p{.12\textwidth}p{.79\textwidth}}
 \toprule Lines & Mathematical and implementation commentary\\\midrule\endhead
-12--26 & \code{run_scattering}: Preserve the user dictionary API and append grid-control inputs. Run shared dynamics; optional CSV contains observable columns only and overwrites its fixed repository results path.\\
-29--47 & \code{plot_scattering}: Plot initial/middle/final $1g$ Fourier densities and directional/zero/TLS/norm populations. The interaction marker is $-x_{\mathrm{tls}}$, derived in \eqref{eq:position}.\\
-50--59 & \code{main}: Parse current CLI inputs, report relevant estimates before simulation, call the module numerical routine, then plot/export. The main guard preserves importability from notebooks.\\
+12--62 & \code{run_scattering}: Preserve the user dictionary API and append grid-control inputs. Run shared dynamics; optional CSV contains observable columns only and overwrites its fixed repository results path.\\
+65--100 & \code{plot_scattering}: Plot initial/middle/final $1g$ Fourier densities and directional/zero/TLS/norm populations. The interaction marker is $-x_{\mathrm{tls}}$, derived in \eqref{eq:position}.\\
+103--126 & \code{main}: Parse current CLI inputs, report relevant estimates before simulation, call the module numerical routine, then plot/export. The main guard preserves importability from notebooks.\\
 \bottomrule\end{longtable}
 \paragraph{\code{experiment/sweep_D_fidelity.py}}
 \lstinputlisting{../experiment/sweep_D_fidelity.py}
 \begin{longtable}{p{.12\textwidth}p{.79\textwidth}}
 \toprule Lines & Mathematical and implementation commentary\\\midrule\endhead
-11--29 & \code{run_coupling_sweep}: Validate a finite nonempty one-dimensional $D$ array and force histories. At each $D$, propagate the chosen comparator and each candidate, reusing it for an identical scheme. Return $(S,Q)$ sample means and initial metrics, \eqref{eq:mean}.\\
-32--42 & \code{plot_coupling_sweep}: Plot sample means versus physical $D$ and dashed initial values, separately for both metrics. The unsuffixed result is neither final fidelity nor a time-integral quadrature.\\
-45--57 & \code{main}: Parse current CLI inputs, report relevant estimates before simulation, call the module numerical routine, then plot/export. The main guard preserves importability from notebooks.\\
+11--54 & \code{run_coupling_sweep}: Validate a finite nonempty one-dimensional $D$ array and force histories. At each $D$, propagate the chosen comparator and each candidate, reusing it for an identical scheme. Return $(S,Q)$ sample means and initial metrics, \eqref{eq:mean}.\\
+57--80 & \code{plot_coupling_sweep}: Plot sample means versus physical $D$ and dashed initial values, separately for both metrics. The unsuffixed result is neither final fidelity nor a time-integral quadrature.\\
+83--109 & \code{main}: Parse current CLI inputs, report relevant estimates before simulation, call the module numerical routine, then plot/export. The main guard preserves importability from notebooks.\\
 \bottomrule\end{longtable}
