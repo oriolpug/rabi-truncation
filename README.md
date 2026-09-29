@@ -63,7 +63,7 @@ Both controls use `delta_k=2*pi/L`. The estimator reports effective cutoffs, act
 | `full+totalcap` | Total photon number at most N | `2*comb(M+N,N)` |
 | `full` | Each mode occupation at most N | `2*(N+1)**M` |
 
-Gaussian preparation uses `exp(-(k-k_0)**2/(4*sigma_k**2))*exp(-i*k*x_0)` on **all selected signed modes**. Number states (`n=0` allowed) and product coherent states are projected and normalized on the chosen basis.
+Gaussian preparation uses `exp(-(k-k_0)**2/(4*sigma_k**2))*exp(-i*k*x_0)` on **all selected signed modes**, normalized to coefficients `c_m` with `sum(abs(c_m)**2)=1`. The documented `number` preparation assumes `n=1`. A coherent packet has physical mode amplitudes `alpha*c_m` and theoretical mean photon number `abs(alpha)**2` before basis projection; the code projects and normalizes it on the chosen basis, which can change that mean. Existing higher-`n` number preparation code is unchanged pending cleanup. The documentation derives the coherent state, projection and actual vector coefficients.
 
 ## Experiments and fidelity
 

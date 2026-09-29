@@ -34,13 +34,9 @@ coverage.xml
 .env.*
 !.env.example
 
-# Generated simulation outputs (existing tracked results stay tracked)
-/results/
-/results_Uri/
-/energy_results/
-/documentation/.build/
 
-# LaTeX intermediate files (keep sources and PDF documents)
+# LaTeX files (keep sources and PDF documents)
+latex_notes/
 *.aux
 *.log
 *.toc
